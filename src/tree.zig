@@ -32,7 +32,7 @@ pub fn Tree(comptime T: type) type {
         allocator: Allocator,
 
         pub fn init(allocator: Allocator) Self {
-            return .{ .allocator = allocator, .root = Node(T).init(allocator, "", null) };
+            return .{ .allocator = allocator, .root = Node(T).init(allocator) };
         }
 
         fn deinit(self: *Self) void {
@@ -59,14 +59,12 @@ pub fn Tree(comptime T: type) type {
                 //    /\
                 // app  foo
                 if (len_prefix == 0) {
-                    const child_one = try self.allocator.create(Node(T));
-                    child_one.* = Node(T).init(self.allocator, current.key, current.value);
+                    const child_one = try Node(T).new(self.allocator, current.key, current.value);
                     child_one.children = current.children;
 
-                    const child_two = try self.allocator.create(Node(T));
-                    child_two.* = Node(T).init(self.allocator, remains, value);
+                    const child_two = try Node(T).new(self.allocator, remains, value);
 
-                    current.* = Node(T).init(self.allocator, "", null);
+                    current.* = Node(T).init(self.allocator);
                     try current.children.append(child_one);
                     try current.children.append(child_two);
 
@@ -77,8 +75,7 @@ pub fn Tree(comptime T: type) type {
                 if (len_prefix < current.key.len) {
                     // apple + app ==> app -> le
                     // app + ap ==> ap -> p
-                    var child = try self.allocator.create(Node(T));
-                    child.* = Node(T).init(self.allocator, current.key[len_prefix..], current.value);
+                    var child = try Node(T).new(self.allocator, current.key[len_prefix..], current.value);
                     child.children = try current.children.clone();
 
                     current.key = remains[0..len_prefix];
@@ -101,9 +98,7 @@ pub fn Tree(comptime T: type) type {
                     }
 
                     // std.debug.print("-- not found \n", .{});
-                    const new_child = try self.allocator.create(Node(T));
-                    new_child.* = Node(T).init(self.allocator, remains, value);
-
+                    const new_child = try Node(T).new(self.allocator, remains, value);
                     try current.children.append(new_child);
                     return;
                 }
@@ -122,8 +117,14 @@ fn Node(comptime T: type) type {
         value: ?T = null,
         children: std.ArrayList(*Self),
 
-        fn init(allocator: Allocator, key: []const u8, value: ?T) Self {
-            return .{ .children = std.ArrayList(*Self).init(allocator), .key = key, .value = value };
+        fn new(allocator: Allocator, key: []const u8, value: ?T) !*Self {
+            const node = try allocator.create(Self);
+            node.* = .{ .children = std.ArrayList(*Self).init(allocator), .key = key, .value = value };
+            return node;
+        }
+
+        fn init(allocator: Allocator) Self {
+            return .{ .children = std.ArrayList(*Self).init(allocator), .key = "" };
         }
 
         fn deinit(self: *Self, allocator: Allocator) void {
