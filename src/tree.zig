@@ -51,7 +51,12 @@ pub fn Tree(comptime T: type) type {
             var remains = key;
 
             traverse: while (true) {
-                const len_prefix = longestPrefix(current.key, remains);
+                // longestPrefix(current.key, remains);
+                const max = if (current.key.len < remains.len) current.key.len else remains.len;
+                var i: usize = 0;
+                const len_prefix = while (i < max) : (i += 1) {
+                    if (current.key[i] != remains[i]) break i;
+                } else i;
 
                 // NOT FOUND, create a new root and add the child nodes
                 // e.g. root: app, new node: foo ->
@@ -104,6 +109,35 @@ pub fn Tree(comptime T: type) type {
                 }
 
                 return;
+            }
+        }
+
+        pub fn search(self: *Self, key: []const u8) ?T {
+            // searching for the root key
+            if (std.mem.eql(u8, self.root.key, key)) {
+                return self.root.value;
+            }
+
+            var current: *Node(T) = &self.root;
+            var remains = key;
+
+            traverse: while (true) {
+                if (remains.len == 0 or remains.len <= current.key.len) {
+                    // no remains left -> not found
+                    return null;
+                }
+                remains = remains[current.key.len..];
+
+                if (current.edge(remains[0])) |child| {
+                    current = child;
+                    if (std.mem.eql(u8, current.key, remains)) {
+                        return current.value;
+                    }
+                    continue :traverse;
+                }
+
+                // not found
+                return null;
             }
         }
     };
@@ -162,13 +196,23 @@ fn Node(comptime T: type) type {
     };
 }
 
-fn longestPrefix(lhs: []const u8, rhs: []const u8) usize {
-    const max = if (lhs.len < rhs.len) lhs.len else rhs.len;
+test "search: empty tree" {
+    var tree = Tree(i32).init(std.testing.allocator);
+    defer tree.deinit();
 
-    var i: usize = 0;
-    return while (i < max) : (i += 1) {
-        if (lhs[i] != rhs[i]) break i;
-    } else i;
+    try std.testing.expectEqual(null, tree.search("not-found"));
+    try std.testing.expectEqual(null, tree.search("root"));
+    try std.testing.expectEqual(null, tree.search(""));
+}
+
+test "search: find root" {
+    var tree = Tree(i32).init(std.testing.allocator);
+    defer tree.deinit();
+
+    try tree.insert("root", 1);
+
+    try std.testing.expectEqual(1, tree.search("root"));
+    try std.testing.expectEqual(null, tree.search("foo"));
 }
 
 test "init: empty root" {
@@ -178,6 +222,9 @@ test "init: empty root" {
     try std.testing.expectEqual("", tree.root.key);
     try std.testing.expectEqual(null, tree.root.value);
     try std.testing.expectEqual(0, tree.root.children.items.len);
+
+    try std.testing.expectEqual(null, tree.search(""));
+    try std.testing.expectEqual(null, tree.search("foo"));
 }
 
 test "only root: app" {
@@ -188,6 +235,9 @@ test "only root: app" {
     try std.testing.expectEqual("app", tree.root.key);
     try std.testing.expectEqual(1, tree.root.value);
     try std.testing.expectEqual(0, tree.root.children.items.len);
+
+    try std.testing.expectEqual(null, tree.search(""));
+    try std.testing.expectEqual(1, tree.search("app"));
 }
 
 test "app + apple ==> app -> le" {
@@ -205,6 +255,11 @@ test "app + apple ==> app -> le" {
     try std.testing.expectEqualStrings("le", child.key);
     try std.testing.expectEqual(5, child.value);
     try std.testing.expectEqual(0, child.children.items.len);
+
+    // searching
+    try std.testing.expectEqual(1, tree.search("app"));
+    try std.testing.expectEqual(5, tree.search("apple"));
+    try std.testing.expectEqual(null, tree.search("le"));
 }
 
 test "apple + app ==> app -> le" {
@@ -222,6 +277,10 @@ test "apple + app ==> app -> le" {
     try std.testing.expectEqualStrings("le", child.key);
     try std.testing.expectEqual(5, child.value);
     try std.testing.expectEqual(0, child.children.items.len);
+
+    // searching
+    try std.testing.expectEqual(1, tree.search("app"));
+    try std.testing.expectEqual(5, tree.search("apple"));
 }
 
 test "apple + appx ==> app -> le & x" {
@@ -243,6 +302,14 @@ test "apple + appx ==> app -> le & x" {
     try std.testing.expectEqualStrings("x", x.key);
     try std.testing.expectEqual(1, x.value);
     try std.testing.expectEqual(0, x.children.items.len);
+
+    // searching
+    try std.testing.expectEqual(1, tree.search("appx"));
+    try std.testing.expectEqual(5, tree.search("apple"));
+    try std.testing.expectEqual(null, tree.search("app"));
+    try std.testing.expectEqual(null, tree.search("le"));
+    try std.testing.expectEqual(null, tree.search("x"));
+    try std.testing.expectEqual(null, tree.search("foo"));
 }
 
 test "app + foo ==> app & foo" {
@@ -265,6 +332,11 @@ test "app + foo ==> app & foo" {
     try std.testing.expectEqualStrings("foo", foo.key);
     try std.testing.expectEqual(5, foo.value);
     try std.testing.expectEqual(0, foo.children.items.len);
+
+    // searching
+    try std.testing.expectEqual(null, tree.search(""));
+    try std.testing.expectEqual(1, tree.search("app"));
+    try std.testing.expectEqual(5, tree.search("foo"));
 }
 
 test "app + apple + foo ==> app -> le  & foo" {
@@ -293,6 +365,14 @@ test "app + apple + foo ==> app -> le  & foo" {
     try std.testing.expectEqualStrings("foo", foo.key);
     try std.testing.expectEqual(5, foo.value);
     try std.testing.expectEqual(0, foo.children.items.len);
+
+    // searching
+    try std.testing.expectEqual(null, tree.search(""));
+    try std.testing.expectEqual(1, tree.search("app"));
+    try std.testing.expectEqual(2, tree.search("apple"));
+    try std.testing.expectEqual(5, tree.search("foo"));
+    try std.testing.expectEqual(null, tree.search("le"));
+    try std.testing.expectEqual(null, tree.search("applex"));
 }
 
 test "apple + app + ap ==> ap -> p -> le" {
@@ -316,6 +396,12 @@ test "apple + app + ap ==> ap -> p -> le" {
     try std.testing.expectEqualStrings("le", child_le.key);
     try std.testing.expectEqual(1, child_le.value);
     try std.testing.expectEqual(0, child_le.children.items.len);
+
+    // searching
+    try std.testing.expectEqual(null, tree.search(""));
+    try std.testing.expectEqual(2, tree.search("app"));
+    try std.testing.expectEqual(1, tree.search("apple"));
+    try std.testing.expectEqual(3, tree.search("ap"));
 }
 
 test "aappzz + aa + aappxx ==> aa -> pp -> xx & zz" {
@@ -343,4 +429,12 @@ test "aappzz + aa + aappxx ==> aa -> pp -> xx & zz" {
     try std.testing.expectEqualStrings("xx", xx.key);
     try std.testing.expectEqual(3, xx.value);
     try std.testing.expectEqual(0, xx.children.items.len);
+
+    // searching
+    try std.testing.expectEqual(null, tree.search(""));
+    try std.testing.expectEqual(1, tree.search("aappzz"));
+    try std.testing.expectEqual(2, tree.search("aa"));
+    try std.testing.expectEqual(3, tree.search("aappxx"));
+    try std.testing.expectEqual(null, tree.search("xx"));
+    try std.testing.expectEqual(null, tree.search("zz"));
 }
