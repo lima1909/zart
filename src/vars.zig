@@ -7,7 +7,7 @@ pub const Variable = struct {
 
 // Parse is the interface for using different implementation of parsing an given 'path'
 // and return the result 'Parsed' and a match function, for resolving the parsed variable.
-pub const parse = fn (path: []const u8) ParseError!?Parsed;
+pub const parse = *const fn (path: []const u8) ParseError!?Parsed;
 
 pub const ParseError = error{
     EmptyVariable,
@@ -26,11 +26,6 @@ pub const Parsed = struct {
         return self._matchFn(path, self.variable, self.isWildcard);
     }
 };
-
-// noParser is an Parser, which ALWAYS returns null.
-pub fn noParser(_: []const u8) ParseError!?Parsed {
-    return null;
-}
 
 // MatchItParser is one implementation of an Parser
 pub fn matchitParser(current_path: []const u8) ParseError!?Parsed {
@@ -183,8 +178,4 @@ test "resolve variable catch-all" {
     try t.expectEqualDeep(Variable{ .key = "all", .value = "" }, m.match(""));
     try t.expectEqualDeep(Variable{ .key = "all", .value = "42" }, m.match("42"));
     try t.expectEqualDeep(Variable{ .key = "all", .value = "42/foo" }, m.match("42/foo"));
-}
-
-test "noParser parser" {
-    try t.expectEqual(null, try noParser("ml{id}"));
 }
