@@ -28,6 +28,10 @@ const Node = @import("node.zig").Node;
 
 const Allocator = std.mem.Allocator;
 
+pub const Config = struct {
+    parser: ?vars.parse = null,
+};
+
 pub fn Tree(comptime T: type) type {
     return struct {
         const Self = @This();
@@ -36,12 +40,11 @@ pub fn Tree(comptime T: type) type {
         parser: ?vars.parse = null,
         allocator: Allocator,
 
-        pub fn init(allocator: Allocator) !Self {
+        pub fn init(allocator: Allocator, cfg: Config) !Self {
             return .{
                 .allocator = allocator,
                 .root = try Node(T).init(allocator, "", null),
-                // TODO: make it possible to set a parser for variables
-                // .parser = vars.matchitParser,
+                .parser = cfg.parser,
             };
         }
 
@@ -56,7 +59,7 @@ pub fn Tree(comptime T: type) type {
                 self.root.value = value;
                 // overwrite the key and value, if the root path contains variables and the tree has an parser
                 if (self.parser) |parser| {
-                    try self.root.splitIntoVariableNodes(parser, key, value);
+                    _ = try self.root.splitIntoVariableNodes(parser, key, value);
                 }
                 return;
             }
@@ -67,7 +70,6 @@ pub fn Tree(comptime T: type) type {
             traverse: while (true) {
                 const len_prefix = commonPrefixLen(current.key, remains);
 
-                // NOT FOUND, create a new root and add the child nodes
                 // e.g. root: app, new node: foo ->
                 // (new_root)
                 //    /\
@@ -92,15 +94,18 @@ pub fn Tree(comptime T: type) type {
                         continue :traverse;
                     }
 
-                    // check is the path is not a param
-                    // if (!param.isParam(remains)) {
+                    if (self.parser) |parser| {
+                        const child = try Node(T).init(self.allocator, remains, value);
+                        if (try child.splitIntoVariableNodes(parser, remains, value)) {
+                            try current.children.append(child);
+                            return;
+                        }
+                        // deallocate, if NOT used
+                        self.allocator.destroy(child);
+                    }
+
                     const new_child = try Node(T).init(self.allocator, remains, value);
                     try current.children.append(new_child);
-                    // }
-
-                    if (self.parser) |parser| {
-                        try current.splitIntoVariableNodes(parser, remains, value);
-                    }
                     return;
                 }
 
@@ -145,6 +150,10 @@ pub fn Tree(comptime T: type) type {
                 // }
             }
         }
+
+        pub fn print(self: *Self) void {
+            self.root.print();
+        }
     };
 }
 
@@ -171,81 +180,105 @@ test "commonPrefixLen" {
     try std.testing.expectEqual(2, commonPrefixLen(l[1..3], r[1..4]));
 }
 
-// test "params: only root" {
-//     var tree = try Tree(i32).init(std.testing.allocator);
-//     defer tree.deinit();
-//
-//     try tree.insert("/user/{id}", 1);
-//
-//     try std.testing.expectEqualStrings("/user/", tree.root.key);
-//     try std.testing.expectEqual(null, tree.root.value);
-//     // try std.testing.expectEqual(true, tree.root.hasParamChild);
-//     try std.testing.expectEqual(1, tree.root.children.items.len);
-//
-//     const id = tree.root.children.items[0];
-//     try std.testing.expectEqualStrings("id", id.key);
-//     try std.testing.expectEqual(1, id.value);
-//     // try std.testing.expectEqual(false, id.hasParamChild);
-//     try std.testing.expectEqual(0, id.children.items.len);
-//
-//     // resolveing
-//     _ = tree.resolve("/user/42");
-// }
-//
-// test "params: root with child" {
-//     var tree = Tree(i32).init(std.testing.allocator);
-//     defer tree.deinit();
-//
-//     try tree.insert("/user/", 1);
-//     try tree.insert("/user/{id}", 2);
-//
-//     try std.testing.expectEqualStrings("/user/", tree.root.key);
-//     try std.testing.expectEqual(1, tree.root.value);
-//     try std.testing.expectEqual(true, tree.root.hasParamChild);
-//     try std.testing.expectEqual(1, tree.root.children.items.len);
-//
-//     const id = tree.root.children.items[0];
-//     try std.testing.expectEqualStrings("id", id.key);
-//     try std.testing.expectEqual(2, id.value);
-//     try std.testing.expectEqual(false, id.hasParamChild);
-//     try std.testing.expectEqual(0, id.children.items.len);
-// }
-//
-// test "params: root with two child" {
-//     var tree = Tree(i32).init(std.testing.allocator);
-//     defer tree.deinit();
-//
-//     try tree.insert("/user/", 1);
-//     try tree.insert("/group/", 2);
-//     try tree.insert("/user/{id}", 3);
-//
-//     try std.testing.expectEqualStrings("/", tree.root.key);
-//     try std.testing.expectEqual(null, tree.root.value);
-//     try std.testing.expectEqual(false, tree.root.hasParamChild);
-//     try std.testing.expectEqual(2, tree.root.children.items.len);
-//
-//     const user = tree.root.children.items[0];
-//     try std.testing.expectEqualStrings("user/", user.key);
-//     try std.testing.expectEqual(1, user.value);
-//     // try std.testing.expectEqual(true, user.hasParamChild);
-//     try std.testing.expectEqual(1, user.children.items.len);
-//
-//     const id = user.children.items[0];
-//     try std.testing.expectEqualStrings("id", id.key);
-//     try std.testing.expectEqual(3, id.value);
-//     // try std.testing.expectEqual(false, id.hasParamChild);
-//     try std.testing.expectEqual(0, id.children.items.len);
-//
-//     const group = tree.root.children.items[1];
-//     try std.testing.expectEqualStrings("group/", group.key);
-//     try std.testing.expectEqual(2, group.value);
-//     // try std.testing.expectEqual(false, group.hasParamChild);
-//     try std.testing.expectEqual(0, group.children.items.len);
-// }
-//
+test "params: only root" {
+    var tree = try Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
+    defer tree.deinit();
+
+    try tree.insert("/user/{id}", 1);
+
+    try std.testing.expectEqualStrings("/user/", tree.root.key);
+    try std.testing.expectEqual(null, tree.root.value);
+    // try std.testing.expectEqual(true, tree.root.hasParamChild);
+    try std.testing.expectEqual(1, tree.root.children.items.len);
+
+    const id = tree.root.children.items[0];
+    try std.testing.expectEqualStrings("{id}", id.key);
+    try std.testing.expectEqual(1, id.value);
+    // try std.testing.expectEqual(false, id.hasParamChild);
+    try std.testing.expectEqual(0, id.children.items.len);
+
+    // resolveing
+    _ = tree.resolve("/user/42");
+}
+
+test "params: only root with two params" {
+    var tree = try Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
+    defer tree.deinit();
+
+    try tree.insert("/user/{id}/{name}", 1);
+
+    try std.testing.expectEqualStrings("/user/", tree.root.key);
+    try std.testing.expectEqual(null, tree.root.value);
+    // try std.testing.expectEqual(true, tree.root.hasParamChild);
+    try std.testing.expectEqual(1, tree.root.children.items.len);
+
+    const id = tree.root.children.items[0];
+    try std.testing.expectEqualStrings("{id}", id.key);
+    try std.testing.expectEqual(null, id.value);
+    // try std.testing.expectEqual(false, id.hasParamChild);
+    try std.testing.expectEqual(1, id.children.items.len);
+
+    const slash = id.children.items[0];
+    const name = slash.children.items[0];
+    try std.testing.expectEqualStrings("{name}", name.key);
+    try std.testing.expectEqual(1, name.value);
+    // try std.testing.expectEqual(false, id.hasParamChild);
+    try std.testing.expectEqual(0, name.children.items.len);
+}
+
+test "params: root with child" {
+    var tree = try Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
+    defer tree.deinit();
+
+    try tree.insert("/user/", 1);
+    try tree.insert("/user/{id}", 2);
+
+    try std.testing.expectEqualStrings("/user/", tree.root.key);
+    try std.testing.expectEqual(1, tree.root.value);
+    // try std.testing.expectEqual(true, tree.root.hasParamChild);
+    try std.testing.expectEqual(1, tree.root.children.items.len);
+
+    const id = tree.root.children.items[0];
+    try std.testing.expectEqualStrings("{id}", id.key);
+    try std.testing.expectEqual(2, id.value);
+    // try std.testing.expectEqual(false, id.hasParamChild);
+    try std.testing.expectEqual(0, id.children.items.len);
+}
+
+test "params: root with two child" {
+    var tree = try Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
+    defer tree.deinit();
+
+    try tree.insert("/user/", 1);
+    try tree.insert("/group/", 2);
+    try tree.insert("/user/{id}", 3);
+
+    try std.testing.expectEqualStrings("/", tree.root.key);
+    try std.testing.expectEqual(null, tree.root.value);
+    // try std.testing.expectEqual(false, tree.root.hasParamChild);
+    try std.testing.expectEqual(2, tree.root.children.items.len);
+
+    const user = tree.root.children.items[0];
+    try std.testing.expectEqualStrings("user/", user.key);
+    try std.testing.expectEqual(1, user.value);
+    // try std.testing.expectEqual(true, user.hasParamChild);
+    try std.testing.expectEqual(1, user.children.items.len);
+
+    const id = user.children.items[0];
+    try std.testing.expectEqualStrings("{id}", id.key);
+    try std.testing.expectEqual(3, id.value);
+    // try std.testing.expectEqual(false, id.hasParamChild);
+    try std.testing.expectEqual(0, id.children.items.len);
+
+    const group = tree.root.children.items[1];
+    try std.testing.expectEqualStrings("group/", group.key);
+    try std.testing.expectEqual(2, group.value);
+    // try std.testing.expectEqual(false, group.hasParamChild);
+    try std.testing.expectEqual(0, group.children.items.len);
+}
 
 test "resolve: empty tree" {
-    var tree = try Tree(i32).init(std.testing.allocator);
+    var tree = try Tree(i32).init(std.testing.allocator, .{});
     defer tree.deinit();
 
     try std.testing.expectEqual(null, tree.resolve("not-found"));
@@ -254,7 +287,7 @@ test "resolve: empty tree" {
 }
 
 test "resolve: only root" {
-    var tree = try Tree(i32).init(std.testing.allocator);
+    var tree = try Tree(i32).init(std.testing.allocator, .{});
     defer tree.deinit();
 
     try tree.insert("root", 1);
@@ -264,7 +297,7 @@ test "resolve: only root" {
 }
 
 test "init: empty root" {
-    var tree = try Tree(i32).init(std.testing.allocator);
+    var tree = try Tree(i32).init(std.testing.allocator, .{});
     defer tree.deinit();
 
     try std.testing.expectEqual("", tree.root.key);
@@ -276,7 +309,7 @@ test "init: empty root" {
 }
 
 test "only root: app" {
-    var tree = try Tree(i32).init(std.testing.allocator);
+    var tree = try Tree(i32).init(std.testing.allocator, .{});
     defer tree.deinit();
 
     try tree.insert("app", 1);
@@ -289,7 +322,7 @@ test "only root: app" {
 }
 
 test "app + apple ==> app -> le" {
-    var tree = try Tree(i32).init(std.testing.allocator);
+    var tree = try Tree(i32).init(std.testing.allocator, .{});
     defer tree.deinit();
 
     try tree.insert("app", 1);
@@ -311,7 +344,7 @@ test "app + apple ==> app -> le" {
 }
 
 test "apple + app ==> app -> le" {
-    var tree = try Tree(i32).init(std.testing.allocator);
+    var tree = try Tree(i32).init(std.testing.allocator, .{});
     defer tree.deinit();
 
     try tree.insert("apple", 5);
@@ -332,7 +365,7 @@ test "apple + app ==> app -> le" {
 }
 
 test "apple + appx ==> app -> le & x" {
-    var tree = try Tree(i32).init(std.testing.allocator);
+    var tree = try Tree(i32).init(std.testing.allocator, .{});
     defer tree.deinit();
 
     try tree.insert("apple", 5);
@@ -361,7 +394,7 @@ test "apple + appx ==> app -> le & x" {
 }
 
 test "app + foo ==> app & foo" {
-    var tree = try Tree(i32).init(std.testing.allocator);
+    var tree = try Tree(i32).init(std.testing.allocator, .{});
     defer tree.deinit();
 
     try tree.insert("app", 1);
@@ -388,7 +421,7 @@ test "app + foo ==> app & foo" {
 }
 
 test "app + apple + foo ==> app -> le  & foo" {
-    var tree = try Tree(i32).init(std.testing.allocator);
+    var tree = try Tree(i32).init(std.testing.allocator, .{});
     defer tree.deinit();
 
     try tree.insert("app", 1);
@@ -424,7 +457,7 @@ test "app + apple + foo ==> app -> le  & foo" {
 }
 
 test "apple + app + ap ==> ap -> p -> le" {
-    var tree = try Tree(i32).init(std.testing.allocator);
+    var tree = try Tree(i32).init(std.testing.allocator, .{});
     defer tree.deinit();
 
     try tree.insert("apple", 1);
@@ -453,7 +486,7 @@ test "apple + app + ap ==> ap -> p -> le" {
 }
 
 test "aappzz + aa + aappxx ==> aa -> pp -> xx & zz" {
-    var tree = try Tree(i32).init(std.testing.allocator);
+    var tree = try Tree(i32).init(std.testing.allocator, .{});
     defer tree.deinit();
 
     try tree.insert("aappzz", 1);

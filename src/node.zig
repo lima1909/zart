@@ -44,7 +44,7 @@ pub fn Node(comptime V: type) type {
         }
 
         // // split the node into parent 'prefix'-, 'variable'- and 'suffix'-node
-        pub inline fn splitIntoVariableNodes(self: *Self, parse: vars.parse, path: []const u8, value: V) !void {
+        pub inline fn splitIntoVariableNodes(self: *Self, parse: vars.parse, path: []const u8, value: V) !bool {
             var remains = path;
             var current = self;
 
@@ -68,7 +68,7 @@ pub fn Node(comptime V: type) type {
                 if (remains.len == 0) {
                     // the last node get the value
                     current.value = value;
-                    return;
+                    return true;
                 }
             }
 
@@ -94,12 +94,12 @@ pub fn Node(comptime V: type) type {
                 if (remains.len == 0) {
                     // the last node get the value
                     current.value = value;
-                    return;
+                    return true;
                 }
             }
 
             // no variable left or found
-            return;
+            return false;
         }
 
         // Create a new empty root and add the child nodes
@@ -151,7 +151,7 @@ pub fn Node(comptime V: type) type {
                 std.debug.print("  ", .{});
             }
 
-            std.debug.print("{s}\t{})\n", .{ self.key, self.value });
+            std.debug.print("{s}\t{any})\n", .{ self.key, self.value });
             for (self.children.items, 0..) |_, i| {
                 self.children.items[i].printIndent(indent + 1);
             }
@@ -221,7 +221,8 @@ test "split into variable Nodes where variable is in the beginning" {
     const node = try Node(i32).init(alloc, "", null);
     defer node.deinit();
 
-    try node.splitIntoVariableNodes(vars.matchitParser, "{id}", 1);
+    const r = try node.splitIntoVariableNodes(vars.matchitParser, "{id}", 1);
+    try std.testing.expectEqual(true, r);
 
     try std.testing.expectEqualStrings("{id}", node.key);
     try std.testing.expectEqual(1, node.value);
@@ -236,7 +237,8 @@ test "split into variable Nodes where variable is in path" {
     const node = try Node(i32).init(alloc, "", null);
     defer node.deinit();
 
-    try node.splitIntoVariableNodes(vars.matchitParser, "/user/{id}", 1);
+    const r = try node.splitIntoVariableNodes(vars.matchitParser, "/user/{id}", 1);
+    try std.testing.expectEqual(true, r);
 
     try std.testing.expectEqualStrings("/user/", node.key);
     try std.testing.expectEqual(null, node.value);
@@ -258,7 +260,8 @@ test "split into variable Nodes with two variables" {
     const node = try Node(i32).init(alloc, "", null);
     defer node.deinit();
 
-    try node.splitIntoVariableNodes(vars.matchitParser, "/user/{id}/name/{name}", 1);
+    const r = try node.splitIntoVariableNodes(vars.matchitParser, "/user/{id}/name/{name}", 1);
+    try std.testing.expectEqual(true, r);
 
     try std.testing.expectEqualStrings("/user/", node.key);
     try std.testing.expectEqual(null, node.value);
