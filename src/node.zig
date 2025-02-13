@@ -43,65 +43,6 @@ pub fn Node(comptime V: type) type {
             return null;
         }
 
-        // // split the node into parent 'prefix'-, 'variable'- and 'suffix'-node
-        pub inline fn splitIntoVariableNodes(self: *Self, parse: vars.parse, path: []const u8, value: V) !bool {
-            var remains = path;
-            var current = self;
-
-            if (try parse(remains)) |parsed| {
-                if (parsed.start > 0) {
-                    current.key = remains[0..parsed.start];
-                    current.value = null;
-
-                    var child = try Self.init(current.allocator, remains[parsed.start..parsed.end], null);
-                    child.matcher = parsed;
-                    // current.hasVarChild = true;
-                    try current.children.append(child);
-                    current = child;
-                } else {
-                    current.key = remains[0..parsed.end];
-                    current.value = null;
-                    current.matcher = parsed;
-                }
-
-                remains = remains[parsed.end..];
-                if (remains.len == 0) {
-                    // the last node get the value
-                    current.value = value;
-                    return true;
-                }
-            }
-
-            while (try parse(remains)) |parsed| {
-                if (current.children.items.len > 0) {
-                    // TODO: replace painc with error
-                    @panic("params can not be used, if the node has children");
-                }
-
-                if (parsed.start > 0) {
-                    const child = try Self.init(current.allocator, remains[0..parsed.start], null);
-                    try current.children.append(child);
-                    current = child;
-                }
-
-                var child = try Self.init(current.allocator, remains[parsed.start..parsed.end], null);
-                child.matcher = parsed;
-                // current.hasVarChild = true;
-                try current.children.append(child);
-                current = child;
-
-                remains = remains[parsed.end..];
-                if (remains.len == 0) {
-                    // the last node get the value
-                    current.value = value;
-                    return true;
-                }
-            }
-
-            // no variable left or found
-            return false;
-        }
-
         // Create a new empty root and add the child nodes
         // previous root: 'app', new added node: 'foo'
         //     (new_root)
@@ -157,6 +98,75 @@ pub fn Node(comptime V: type) type {
             }
         }
     };
+}
+
+// parse the given path, if the path contains variable,
+// then returns the root Node from the path, otherwise null
+pub inline fn parsePath(comptime V: type, allocator: Allocator, p: ?vars.parse, path: []const u8, value: V) !?*Node(V) {
+    if (p == null) {
+        return null;
+    }
+
+    const parse = p.?;
+    var remains = path;
+    var root: *Node(V) = undefined;
+    var current: *Node(V) = undefined;
+
+    if (try parse(remains)) |parsed| {
+        if (parsed.start == 0) {
+            // root Node is var Node
+            root = try Node(V).init(allocator, remains[0..parsed.end], null);
+            root.matcher = parsed;
+            current = root;
+        } else {
+            // prefix Node
+            root = try Node(V).init(allocator, remains[0..parsed.start], null);
+            // var Node
+            var child = try Node(V).init(allocator, remains[parsed.start..parsed.end], null);
+            child.matcher = parsed;
+            // root.hasVarChild = true;
+            try root.children.append(child);
+            current = child;
+        }
+
+        remains = remains[parsed.end..];
+        if (remains.len == 0) {
+            // the last node get the value
+            current.value = value;
+            return root;
+        }
+    }
+
+    while (try parse(remains)) |parsed| {
+        if (current.children.items.len > 0) {
+            // TODO: replace painc with error
+            @panic("params can not be used, if the node has children");
+        }
+
+        if (parsed.start > 0) {
+            // prefix Node
+            const child = try Node(V).init(allocator, remains[0..parsed.start], null);
+            try current.children.append(child);
+            current = child;
+        }
+
+        // var Node
+        var child = try Node(V).init(allocator, remains[parsed.start..parsed.end], null);
+        child.matcher = parsed;
+        // current.hasVarChild = true;
+        try current.children.append(child);
+        current = child;
+
+        remains = remains[parsed.end..];
+        if (remains.len == 0) {
+            // the last node get the value
+            current.value = value;
+            return root;
+        }
+    }
+
+    // no variable left or found
+    return null;
 }
 
 test "new empty root node" {
@@ -218,11 +228,8 @@ test "split current node, overlapping" {
 
 test "split into variable Nodes where variable is in the beginning" {
     const alloc = std.testing.allocator;
-    const node = try Node(i32).init(alloc, "", null);
+    const node = (try parsePath(i32, alloc, vars.matchitParser, "{id}", 1)).?;
     defer node.deinit();
-
-    const r = try node.splitIntoVariableNodes(vars.matchitParser, "{id}", 1);
-    try std.testing.expectEqual(true, r);
 
     try std.testing.expectEqualStrings("{id}", node.key);
     try std.testing.expectEqual(1, node.value);
@@ -234,11 +241,8 @@ test "split into variable Nodes where variable is in the beginning" {
 
 test "split into variable Nodes where variable is in path" {
     const alloc = std.testing.allocator;
-    const node = try Node(i32).init(alloc, "", null);
+    const node = (try parsePath(i32, alloc, vars.matchitParser, "/user/{id}", 1)).?;
     defer node.deinit();
-
-    const r = try node.splitIntoVariableNodes(vars.matchitParser, "/user/{id}", 1);
-    try std.testing.expectEqual(true, r);
 
     try std.testing.expectEqualStrings("/user/", node.key);
     try std.testing.expectEqual(null, node.value);
@@ -257,11 +261,8 @@ test "split into variable Nodes where variable is in path" {
 
 test "split into variable Nodes with two variables" {
     const alloc = std.testing.allocator;
-    const node = try Node(i32).init(alloc, "", null);
+    const node = (try parsePath(i32, alloc, vars.matchitParser, "/user/{id}/name/{name}", 1)).?;
     defer node.deinit();
-
-    const r = try node.splitIntoVariableNodes(vars.matchitParser, "/user/{id}/name/{name}", 1);
-    try std.testing.expectEqual(true, r);
 
     try std.testing.expectEqualStrings("/user/", node.key);
     try std.testing.expectEqual(null, node.value);
