@@ -12,7 +12,6 @@ pub fn Node(comptime V: type) type {
         children: std.ArrayList(*Self),
 
         // handle variables
-        // ??? hasVarChild: bool = false,
         matcher: ?vars.Parsed = null,
 
         allocator: Allocator,
@@ -48,7 +47,7 @@ pub fn Node(comptime V: type) type {
         //     (new_root)
         //        /\
         //     app  foo
-        pub inline fn newEmptyRoot(self: *Self, key: []const u8, value: V) !Self {
+        pub inline fn newEmptyRoot(self: *Self, path: []const u8, value: V) !Self {
             var root = Self{
                 .allocator = self.allocator,
                 .children = std.ArrayList(*Self).init(self.allocator),
@@ -60,7 +59,7 @@ pub fn Node(comptime V: type) type {
             lhs.children = self.children;
             try root.children.append(lhs);
 
-            const rhs = try Self.init(self.allocator, key, value);
+            const rhs = try Self.init(self.allocator, path, value);
             try root.children.append(rhs);
 
             return root;
@@ -89,10 +88,10 @@ pub fn Node(comptime V: type) type {
 
         fn printIndent(self: *Self, indent: u8) void {
             for (0..indent) |_| {
-                std.debug.print("  ", .{});
+                std.debug.print("\t", .{});
             }
 
-            std.debug.print("{s}\t{any})\n", .{ self.key, self.value });
+            std.debug.print("{s}\t\t({any})\n", .{ self.key, self.value });
             for (self.children.items, 0..) |_, i| {
                 self.children.items[i].printIndent(indent + 1);
             }
@@ -110,7 +109,7 @@ pub inline fn parsePath(comptime V: type, allocator: Allocator, p: ?vars.parse, 
     const parse = p.?;
     var remains = path;
     var root: *Node(V) = undefined;
-    var current: *Node(V) = undefined;
+    var current: ?*Node(V) = null;
 
     if (try parse(remains)) |parsed| {
         if (parsed.start == 0) {
@@ -124,7 +123,6 @@ pub inline fn parsePath(comptime V: type, allocator: Allocator, p: ?vars.parse, 
             // var Node
             var child = try Node(V).init(allocator, remains[parsed.start..parsed.end], null);
             child.matcher = parsed;
-            // root.hasVarChild = true;
             try root.children.append(child);
             current = child;
         }
@@ -132,13 +130,15 @@ pub inline fn parsePath(comptime V: type, allocator: Allocator, p: ?vars.parse, 
         remains = remains[parsed.end..];
         if (remains.len == 0) {
             // the last node get the value
-            current.value = value;
+            current.?.value = value;
             return root;
         }
+    } else {
+        return null;
     }
 
     while (try parse(remains)) |parsed| {
-        if (current.children.items.len > 0) {
+        if (current.?.children.items.len > 0) {
             // TODO: replace painc with error
             @panic("params can not be used, if the node has children");
         }
@@ -146,27 +146,25 @@ pub inline fn parsePath(comptime V: type, allocator: Allocator, p: ?vars.parse, 
         if (parsed.start > 0) {
             // prefix Node
             const child = try Node(V).init(allocator, remains[0..parsed.start], null);
-            try current.children.append(child);
+            try current.?.children.append(child);
             current = child;
         }
 
         // var Node
         var child = try Node(V).init(allocator, remains[parsed.start..parsed.end], null);
         child.matcher = parsed;
-        // current.hasVarChild = true;
-        try current.children.append(child);
+        try current.?.children.append(child);
         current = child;
 
         remains = remains[parsed.end..];
         if (remains.len == 0) {
             // the last node get the value
-            current.value = value;
+            current.?.value = value;
             return root;
         }
     }
 
-    // no variable left or found
-    return null;
+    return root;
 }
 
 test "new empty root node" {
@@ -226,7 +224,7 @@ test "split current node, overlapping" {
     try std.testing.expectEqual(0, child.children.items.len);
 }
 
-test "split into variable Nodes where variable is in the beginning" {
+test "parsePath: variable is in the beginning and only" {
     const alloc = std.testing.allocator;
     const node = (try parsePath(i32, alloc, vars.matchitParser, "{id}", 1)).?;
     defer node.deinit();
@@ -239,7 +237,7 @@ test "split into variable Nodes where variable is in the beginning" {
     try std.testing.expectEqualDeep(vars.Variable{ .key = "id", .value = "42" }, node.matcher.?.match("42"));
 }
 
-test "split into variable Nodes where variable is in path" {
+test "parsePath: variable with prefix" {
     const alloc = std.testing.allocator;
     const node = (try parsePath(i32, alloc, vars.matchitParser, "/user/{id}", 1)).?;
     defer node.deinit();
@@ -248,7 +246,6 @@ test "split into variable Nodes where variable is in path" {
     try std.testing.expectEqual(null, node.value);
     try std.testing.expectEqual(1, node.children.items.len);
     try std.testing.expectEqual(null, node.matcher);
-    // try std.testing.expect(node.hasVarChild);
 
     const child = node.children.items[0];
     try std.testing.expectEqualStrings("{id}", child.key);
@@ -259,7 +256,41 @@ test "split into variable Nodes where variable is in path" {
     try std.testing.expectEqualDeep(vars.Variable{ .key = "id", .value = "42" }, child.matcher.?.match("42/name"));
 }
 
-test "split into variable Nodes with two variables" {
+test "parsePath: variable with suffix" {
+    const alloc = std.testing.allocator;
+    const node = (try parsePath(i32, alloc, vars.matchitParser, "{id}/user/", 1)).?;
+    defer node.deinit();
+
+    try std.testing.expectEqualStrings("{id}", node.key);
+    try std.testing.expectEqual(null, node.value);
+    try std.testing.expect(null != node.matcher);
+    try std.testing.expectEqual(false, node.matcher.?.isWildcard);
+    try std.testing.expectEqual(0, node.children.items.len);
+
+    try std.testing.expectEqualDeep(vars.Variable{ .key = "id", .value = "42" }, node.matcher.?.match("42/name"));
+}
+
+test "parsePath: variable in between" {
+    const alloc = std.testing.allocator;
+    const node = (try parsePath(i32, alloc, vars.matchitParser, "/user/{id}/name", 1)).?;
+    defer node.deinit();
+
+    try std.testing.expectEqualStrings("/user/", node.key);
+    try std.testing.expectEqual(null, node.value);
+    try std.testing.expectEqual(1, node.children.items.len);
+    try std.testing.expectEqual(null, node.matcher);
+
+    const id = node.children.items[0];
+    try std.testing.expectEqualStrings("{id}", id.key);
+    try std.testing.expectEqual(null, id.value);
+    try std.testing.expect(null != id.matcher);
+    try std.testing.expectEqual(false, id.matcher.?.isWildcard);
+    try std.testing.expectEqual(0, id.children.items.len);
+
+    try std.testing.expectEqualDeep(vars.Variable{ .key = "id", .value = "42" }, id.matcher.?.match("42/name"));
+}
+
+test "parsePath: split into variable Nodes with two variables" {
     const alloc = std.testing.allocator;
     const node = (try parsePath(i32, alloc, vars.matchitParser, "/user/{id}/name/{name}", 1)).?;
     defer node.deinit();
@@ -275,6 +306,7 @@ test "split into variable Nodes with two variables" {
     try std.testing.expect(null != id.matcher);
     try std.testing.expectEqual(false, id.matcher.?.isWildcard);
     try std.testing.expectEqual(1, id.children.items.len);
+
     try std.testing.expectEqualDeep(vars.Variable{ .key = "id", .value = "42" }, id.matcher.?.match("42/name"));
 
     const child = id.children.items[0];
@@ -289,5 +321,6 @@ test "split into variable Nodes with two variables" {
     try std.testing.expectEqual(0, name.children.items.len);
     try std.testing.expect(null != name.matcher);
     try std.testing.expectEqual(false, name.matcher.?.isWildcard);
+
     try std.testing.expectEqualDeep(vars.Variable{ .key = "name", .value = "me" }, name.matcher.?.match("me"));
 }

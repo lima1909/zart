@@ -52,6 +52,7 @@ pub fn Tree(comptime V: type) type {
         }
 
         pub fn insert(self: *Self, key: []const u8, value: V) !void {
+
             // first step, root doesn't exist -> create root node
             if (self.root == null) {
                 // if an parser is set, then parse the given key, if he contains variables
@@ -59,8 +60,8 @@ pub fn Tree(comptime V: type) type {
                     self.root = node;
                 } else {
                     self.root = try Node(V).init(self.allocator, key, value);
+                    return;
                 }
-                return;
             }
 
             var current: *Node(V) = self.root.?;
@@ -111,49 +112,83 @@ pub fn Tree(comptime V: type) type {
         }
 
         pub fn resolve(self: *Self, path: []const u8) ?V {
-            if (self.root == null) {
+            // no root and no input path -> not found
+            if (self.root == null or path.len == 0) {
                 return null;
-            }
-
-            // resolveing for the root key
-            if (std.mem.eql(u8, self.root.?.key, path)) {
-                return self.root.?.value;
             }
 
             var current: *Node(V) = self.root.?;
             var remains = path;
 
-            traverse: while (true) {
-                if (remains.len == 0 or remains.len <= current.key.len) {
-                    // no remains left -> not found
-                    return null;
-                }
-                remains = remains[current.key.len..];
-
-                // no params
-                // if (!current.hasParamChild) {
-                if (current.edge(remains[0])) |child| {
-                    current = child;
-                    if (std.mem.eql(u8, current.key, remains)) {
+            if (self.parser != null) {
+                // the match is on the current node, e.g. root-node
+                if (current.matcher) |matcher| {
+                    const vr = matcher.match(remains);
+                    remains = remains[vr.value.len..];
+                    if (remains.len == 0) {
                         return current.value;
                     }
-                    continue :traverse;
+
+                    if (current.children.items.len > 0) {
+                        current = current.children.items[0];
+                    }
                 }
+            }
 
-                // not found
-                return null;
-                // }
+            traverse: while (true) {
 
-                // with params
-                // if (current.children.items[0].paramResolver) |r| {
-                //     const p = r.match(remains);
-                //     std.debug.print("-- Param: {s} = {s}\n", .{ p.key, p.value });
-                // }
+                // found the wanted node and return the value
+                if (std.mem.eql(u8, current.key, remains)) {
+                    return current.value;
+                }
+                //
+                // traverse the tree down for the next try
+                else if (remains.len > current.key.len) {
+                    remains = remains[current.key.len..];
+
+                    // check, there are possible variables
+                    if (self.parser != null) {
+                        // has the child-node a variable?
+                        if (current.children.items.len > 0) {
+                            const child = current.children.items[0];
+                            if (child.matcher != null) {
+                                const vr = child.matcher.?.match(remains);
+                                remains = remains[vr.value.len..];
+                                if (remains.len == 0) {
+                                    return child.value;
+                                }
+
+                                if (child.children.items.len > 0) {
+                                    current = child.children.items[0];
+                                }
+                                continue :traverse;
+                            }
+                        }
+                    }
+
+                    // there are no variables
+                    if (current.edge(remains[0])) |child| {
+                        current = child;
+                        continue :traverse;
+                    }
+
+                    // not found
+                    return null;
+                }
+                //
+                // no remains left -> not found
+                else {
+                    return null;
+                }
             }
         }
 
         pub fn print(self: *Self) void {
-            self.root.print();
+            if (self.root) |root| {
+                root.print();
+            } else {
+                std.debug.print("NO root node available!\n", .{});
+            }
         }
     };
 }
@@ -181,7 +216,40 @@ test "commonPrefixLen" {
     try std.testing.expectEqual(2, commonPrefixLen(l[1..3], r[1..4]));
 }
 
-test "params: only root" {
+test "only root param" {
+    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
+    defer tree.deinit();
+
+    try tree.insert("{name}", 96);
+
+    try std.testing.expectEqualStrings("{name}", tree.root.?.key);
+    try std.testing.expectEqual(96, tree.root.?.value);
+    try std.testing.expectEqual(0, tree.root.?.children.items.len);
+
+    // resolving
+    try std.testing.expectEqual(96, tree.resolve("jasmin"));
+}
+
+test "root param starts with slash" {
+    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
+    defer tree.deinit();
+
+    try tree.insert("/{name}", 99);
+
+    try std.testing.expectEqualStrings("/", tree.root.?.key);
+    try std.testing.expectEqual(null, tree.root.?.value);
+    try std.testing.expectEqual(1, tree.root.?.children.items.len);
+
+    const name = tree.root.?.children.items[0];
+    try std.testing.expectEqualStrings("{name}", name.key);
+    try std.testing.expectEqual(99, name.value);
+    try std.testing.expectEqual(0, name.children.items.len);
+
+    // resolving
+    try std.testing.expectEqual(99, tree.resolve("/petra"));
+}
+
+test "root param with prefix" {
     var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
     defer tree.deinit();
 
@@ -189,20 +257,66 @@ test "params: only root" {
 
     try std.testing.expectEqualStrings("/user/", tree.root.?.key);
     try std.testing.expectEqual(null, tree.root.?.value);
-    // try std.testing.expectEqual(true, tree.root.hasParamChild);
     try std.testing.expectEqual(1, tree.root.?.children.items.len);
 
     const id = tree.root.?.children.items[0];
     try std.testing.expectEqualStrings("{id}", id.key);
     try std.testing.expectEqual(1, id.value);
-    // try std.testing.expectEqual(false, id.hasParamChild);
     try std.testing.expectEqual(0, id.children.items.len);
 
-    // resolveing
-    _ = tree.resolve("/user/42");
+    // resolving
+    try std.testing.expectEqual(1, tree.resolve("/user/42"));
 }
 
-test "params: only root with two params" {
+test "root paramn with suffix" {
+    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
+    defer tree.deinit();
+
+    try tree.insert("{id}/user/", 1);
+
+    try std.testing.expectEqualStrings("{id}", tree.root.?.key);
+    try std.testing.expectEqual(null, tree.root.?.value);
+    try std.testing.expect(tree.root.?.matcher != null);
+    try std.testing.expectEqual(1, tree.root.?.children.items.len);
+
+    const user = tree.root.?.children.items[0];
+    try std.testing.expectEqualStrings("/user/", user.key);
+    try std.testing.expectEqual(1, user.value);
+    try std.testing.expect(user.matcher == null);
+    try std.testing.expectEqual(0, user.children.items.len);
+
+    // resolving
+    try std.testing.expectEqual(1, tree.resolve("42/user/"));
+}
+
+test "root paramn in between" {
+    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
+    defer tree.deinit();
+
+    try tree.insert("/prefix/{id}/user/", 1);
+
+    try std.testing.expectEqualStrings("/prefix/", tree.root.?.key);
+    try std.testing.expectEqual(null, tree.root.?.value);
+    try std.testing.expect(tree.root.?.matcher == null);
+    try std.testing.expectEqual(1, tree.root.?.children.items.len);
+
+    const id = tree.root.?.children.items[0];
+    try std.testing.expectEqualStrings("{id}", id.key);
+    try std.testing.expectEqual(null, id.value);
+    try std.testing.expect(id.matcher != null);
+    try std.testing.expectEqual(1, id.children.items.len);
+
+    const user = id.children.items[0];
+    try std.testing.expectEqualStrings("/user/", user.key);
+    try std.testing.expectEqual(1, user.value);
+    try std.testing.expect(user.matcher == null);
+    try std.testing.expectEqual(0, user.children.items.len);
+
+    // resolving
+    try std.testing.expectEqual(1, tree.resolve("/prefix/42/user/"));
+}
+
+test "root with two params" {
     var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
     defer tree.deinit();
 
@@ -210,21 +324,36 @@ test "params: only root with two params" {
 
     try std.testing.expectEqualStrings("/user/", tree.root.?.key);
     try std.testing.expectEqual(null, tree.root.?.value);
-    // try std.testing.expectEqual(true, tree.root.hasParamChild);
     try std.testing.expectEqual(1, tree.root.?.children.items.len);
 
     const id = tree.root.?.children.items[0];
     try std.testing.expectEqualStrings("{id}", id.key);
     try std.testing.expectEqual(null, id.value);
-    // try std.testing.expectEqual(false, id.hasParamChild);
+    try std.testing.expect(id.matcher != null);
     try std.testing.expectEqual(1, id.children.items.len);
 
     const slash = id.children.items[0];
+    try std.testing.expectEqualStrings("/", slash.key);
+    try std.testing.expectEqual(null, slash.value);
+    try std.testing.expect(slash.matcher == null);
+
     const name = slash.children.items[0];
     try std.testing.expectEqualStrings("{name}", name.key);
     try std.testing.expectEqual(1, name.value);
-    // try std.testing.expectEqual(false, id.hasParamChild);
+    try std.testing.expect(name.matcher != null);
     try std.testing.expectEqual(0, name.children.items.len);
+
+    // resolving
+    try std.testing.expectEqual(1, tree.resolve("/user/42/paul"));
+}
+
+test "params: only root with two params and one node between" {
+    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
+    defer tree.deinit();
+
+    try tree.insert("/user/{id}/with/{name}", 77);
+
+    try std.testing.expectEqual(77, tree.resolve("/user/42/with/paul"));
 }
 
 test "params: root with child" {
@@ -236,14 +365,19 @@ test "params: root with child" {
 
     try std.testing.expectEqualStrings("/user/", tree.root.?.key);
     try std.testing.expectEqual(1, tree.root.?.value);
-    // try std.testing.expectEqual(true, tree.root.hasParamChild);
     try std.testing.expectEqual(1, tree.root.?.children.items.len);
+    try std.testing.expect(tree.root.?.matcher == null);
 
     const id = tree.root.?.children.items[0];
     try std.testing.expectEqualStrings("{id}", id.key);
     try std.testing.expectEqual(2, id.value);
-    // try std.testing.expectEqual(false, id.hasParamChild);
     try std.testing.expectEqual(0, id.children.items.len);
+    try std.testing.expect(id.matcher != null);
+
+    // resolving
+    try std.testing.expectEqual(null, tree.resolve("/foo/"));
+    try std.testing.expectEqual(1, tree.resolve("/user/"));
+    try std.testing.expectEqual(2, tree.resolve("/user/007"));
 }
 
 test "params: root with two child" {
@@ -276,6 +410,11 @@ test "params: root with two child" {
     try std.testing.expectEqual(2, group.value);
     // try std.testing.expectEqual(false, group.hasParamChild);
     try std.testing.expectEqual(0, group.children.items.len);
+
+    // resolving
+    try std.testing.expectEqual(1, tree.resolve("/user/"));
+    try std.testing.expectEqual(2, tree.resolve("/group/"));
+    try std.testing.expectEqual(3, tree.resolve("/user/33"));
 }
 
 test "resolve: empty tree" {
@@ -295,6 +434,9 @@ test "resolve: only root" {
 
     try std.testing.expectEqual(1, tree.resolve("root"));
     try std.testing.expectEqual(null, tree.resolve("foo"));
+
+    // resolving
+    try std.testing.expectEqual(1, tree.resolve("root").?);
 }
 
 test "init: empty root" {
@@ -316,6 +458,7 @@ test "only root: app" {
     try std.testing.expectEqual(1, tree.root.?.value);
     try std.testing.expectEqual(0, tree.root.?.children.items.len);
 
+    // resolving
     try std.testing.expectEqual(null, tree.resolve(""));
     try std.testing.expectEqual(1, tree.resolve("app"));
 }
@@ -340,6 +483,10 @@ test "app + apple ==> app -> le" {
     try std.testing.expectEqual(1, tree.resolve("app"));
     try std.testing.expectEqual(5, tree.resolve("apple"));
     try std.testing.expectEqual(null, tree.resolve("le"));
+
+    // resolving
+    try std.testing.expectEqual(1, tree.resolve("app"));
+    try std.testing.expectEqual(5, tree.resolve("apple"));
 }
 
 test "apple + app ==> app -> le" {
