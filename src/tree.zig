@@ -259,9 +259,9 @@ test "only root param" {
     var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
     defer tree.deinit();
 
-    try tree.insert("{name}", 96);
+    try tree.insert(":name", 96);
 
-    try std.testing.expectEqualStrings("{name}", tree.root.?.key);
+    try std.testing.expectEqualStrings(":name", tree.root.?.key);
     try std.testing.expectEqual(96, tree.root.?.value);
     try std.testing.expectEqual(0, tree.root.?.children.items.len);
 
@@ -277,14 +277,14 @@ test "root param starts with slash" {
     var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
     defer tree.deinit();
 
-    try tree.insert("/{name}", 99);
+    try tree.insert("/:name", 99);
 
     try std.testing.expectEqualStrings("/", tree.root.?.key);
     try std.testing.expectEqual(null, tree.root.?.value);
     try std.testing.expectEqual(1, tree.root.?.children.items.len);
 
     const name = tree.root.?.children.items[0];
-    try std.testing.expectEqualStrings("{name}", name.key);
+    try std.testing.expectEqualStrings(":name", name.key);
     try std.testing.expectEqual(99, name.value);
     try std.testing.expectEqual(0, name.children.items.len);
 
@@ -298,14 +298,14 @@ test "root param with prefix" {
     var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
     defer tree.deinit();
 
-    try tree.insert("/user/{id}", 1);
+    try tree.insert("/user/:id", 1);
 
     try std.testing.expectEqualStrings("/user/", tree.root.?.key);
     try std.testing.expectEqual(null, tree.root.?.value);
     try std.testing.expectEqual(1, tree.root.?.children.items.len);
 
     const id = tree.root.?.children.items[0];
-    try std.testing.expectEqualStrings("{id}", id.key);
+    try std.testing.expectEqualStrings(":id", id.key);
     try std.testing.expectEqual(1, id.value);
     try std.testing.expectEqual(0, id.children.items.len);
 
@@ -319,9 +319,9 @@ test "root paramn with suffix" {
     var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
     defer tree.deinit();
 
-    try tree.insert("{id}/user/", 1);
+    try tree.insert(":id/user/", 1);
 
-    try std.testing.expectEqualStrings("{id}", tree.root.?.key);
+    try std.testing.expectEqualStrings(":id", tree.root.?.key);
     try std.testing.expectEqual(null, tree.root.?.value);
     try std.testing.expect(tree.root.?.matcher != null);
     try std.testing.expectEqual(1, tree.root.?.children.items.len);
@@ -342,7 +342,7 @@ test "root paramn in between" {
     var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
     defer tree.deinit();
 
-    try tree.insert("/prefix/{id}/user/", 1);
+    try tree.insert("/prefix/:id/user/", 1);
 
     try std.testing.expectEqualStrings("/prefix/", tree.root.?.key);
     try std.testing.expectEqual(null, tree.root.?.value);
@@ -350,7 +350,7 @@ test "root paramn in between" {
     try std.testing.expectEqual(1, tree.root.?.children.items.len);
 
     const id = tree.root.?.children.items[0];
-    try std.testing.expectEqualStrings("{id}", id.key);
+    try std.testing.expectEqualStrings(":id", id.key);
     try std.testing.expectEqual(null, id.value);
     try std.testing.expect(id.matcher != null);
     try std.testing.expectEqual(1, id.children.items.len);
@@ -371,14 +371,14 @@ test "root with two params" {
     var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
     defer tree.deinit();
 
-    try tree.insert("/user/{id}/{name}", 1);
+    try tree.insert("/user/:id/:name", 1);
 
     try std.testing.expectEqualStrings("/user/", tree.root.?.key);
     try std.testing.expectEqual(null, tree.root.?.value);
     try std.testing.expectEqual(1, tree.root.?.children.items.len);
 
     const id = tree.root.?.children.items[0];
-    try std.testing.expectEqualStrings("{id}", id.key);
+    try std.testing.expectEqualStrings(":id", id.key);
     try std.testing.expectEqual(null, id.value);
     try std.testing.expect(id.matcher != null);
     try std.testing.expectEqual(1, id.children.items.len);
@@ -389,7 +389,7 @@ test "root with two params" {
     try std.testing.expect(slash.matcher == null);
 
     const name = slash.children.items[0];
-    try std.testing.expectEqualStrings("{name}", name.key);
+    try std.testing.expectEqualStrings(":name", name.key);
     try std.testing.expectEqual(1, name.value);
     try std.testing.expect(name.matcher != null);
     try std.testing.expectEqual(0, name.children.items.len);
@@ -405,7 +405,7 @@ test "params: only root with two params and one node between" {
     var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
     defer tree.deinit();
 
-    try tree.insert("/user/{id}/with/{name}", 77);
+    try tree.insert("/user/:id/with/:name", 77);
 
     const r = tree.resolve("/user/42/with/paul");
     try std.testing.expectEqual(77, r.value);
@@ -418,7 +418,7 @@ test "params: root with child" {
     defer tree.deinit();
 
     try tree.insert("/user/", 1);
-    try tree.insert("/user/{id}", 2);
+    try tree.insert("/user/:id", 2);
 
     try std.testing.expectEqualStrings("/user/", tree.root.?.key);
     try std.testing.expectEqual(1, tree.root.?.value);
@@ -426,7 +426,7 @@ test "params: root with child" {
     try std.testing.expect(tree.root.?.matcher == null);
 
     const id = tree.root.?.children.items[0];
-    try std.testing.expectEqualStrings("{id}", id.key);
+    try std.testing.expectEqualStrings(":id", id.key);
     try std.testing.expectEqual(2, id.value);
     try std.testing.expectEqual(0, id.children.items.len);
     try std.testing.expect(id.matcher != null);
@@ -446,7 +446,7 @@ test "params: root with two child" {
 
     try tree.insert("/user/", 1);
     try tree.insert("/group/", 2);
-    try tree.insert("/user/{id}", 3);
+    try tree.insert("/user/:id", 3);
 
     try std.testing.expectEqualStrings("/", tree.root.?.key);
     try std.testing.expectEqual(null, tree.root.?.value);
@@ -458,7 +458,7 @@ test "params: root with two child" {
     try std.testing.expectEqual(1, user.children.items.len);
 
     const id = user.children.items[0];
-    try std.testing.expectEqualStrings("{id}", id.key);
+    try std.testing.expectEqualStrings(":id", id.key);
     try std.testing.expectEqual(3, id.value);
     try std.testing.expectEqual(0, id.children.items.len);
 

@@ -225,10 +225,10 @@ test "split current node, overlapping" {
 
 test "parsePath: variable is in the beginning and only" {
     const alloc = std.testing.allocator;
-    const node = (try parsePath(i32, alloc, vars.matchitParser, "{id}", 1)).?;
+    const node = (try parsePath(i32, alloc, vars.matchitParser, ":id", 1)).?;
     defer node.deinit();
 
-    try std.testing.expectEqualStrings("{id}", node.key);
+    try std.testing.expectEqualStrings(":id", node.key);
     try std.testing.expectEqual(1, node.value);
     try std.testing.expectEqual(0, node.children.items.len);
     try std.testing.expect(null != node.matcher);
@@ -238,7 +238,7 @@ test "parsePath: variable is in the beginning and only" {
 
 test "parsePath: variable with prefix" {
     const alloc = std.testing.allocator;
-    const node = (try parsePath(i32, alloc, vars.matchitParser, "/user/{id}", 1)).?;
+    const node = (try parsePath(i32, alloc, vars.matchitParser, "/user/:id", 1)).?;
     defer node.deinit();
 
     try std.testing.expectEqualStrings("/user/", node.key);
@@ -247,7 +247,7 @@ test "parsePath: variable with prefix" {
     try std.testing.expectEqual(null, node.matcher);
 
     const child = node.children.items[0];
-    try std.testing.expectEqualStrings("{id}", child.key);
+    try std.testing.expectEqualStrings(":id", child.key);
     try std.testing.expectEqual(1, child.value);
     try std.testing.expect(null != child.matcher);
     try std.testing.expectEqual(false, child.matcher.?.isWildcard);
@@ -257,10 +257,10 @@ test "parsePath: variable with prefix" {
 
 test "parsePath: variable with suffix" {
     const alloc = std.testing.allocator;
-    const node = (try parsePath(i32, alloc, vars.matchitParser, "{id}/user/", 1)).?;
+    const node = (try parsePath(i32, alloc, vars.matchitParser, ":id/user/", 1)).?;
     defer node.deinit();
 
-    try std.testing.expectEqualStrings("{id}", node.key);
+    try std.testing.expectEqualStrings(":id", node.key);
     try std.testing.expectEqual(null, node.value);
     try std.testing.expect(null != node.matcher);
     try std.testing.expectEqual(false, node.matcher.?.isWildcard);
@@ -271,7 +271,7 @@ test "parsePath: variable with suffix" {
 
 test "parsePath: variable in between" {
     const alloc = std.testing.allocator;
-    const node = (try parsePath(i32, alloc, vars.matchitParser, "/user/{id}/name", 1)).?;
+    const node = (try parsePath(i32, alloc, vars.matchitParser, "/user/:id/name", 1)).?;
     defer node.deinit();
 
     try std.testing.expectEqualStrings("/user/", node.key);
@@ -280,7 +280,7 @@ test "parsePath: variable in between" {
     try std.testing.expectEqual(null, node.matcher);
 
     const id = node.children.items[0];
-    try std.testing.expectEqualStrings("{id}", id.key);
+    try std.testing.expectEqualStrings(":id", id.key);
     try std.testing.expectEqual(null, id.value);
     try std.testing.expect(null != id.matcher);
     try std.testing.expectEqual(false, id.matcher.?.isWildcard);
@@ -291,7 +291,7 @@ test "parsePath: variable in between" {
 
 test "parsePath: split into variable Nodes with two variables" {
     const alloc = std.testing.allocator;
-    const node = (try parsePath(i32, alloc, vars.matchitParser, "/user/{id}/name/{name}", 1)).?;
+    const node = (try parsePath(i32, alloc, vars.matchitParser, "/user/:id/name/:name", 1)).?;
     defer node.deinit();
 
     try std.testing.expectEqualStrings("/user/", node.key);
@@ -300,7 +300,7 @@ test "parsePath: split into variable Nodes with two variables" {
     try std.testing.expectEqual(null, node.matcher);
 
     const id = node.children.items[0];
-    try std.testing.expectEqualStrings("{id}", id.key);
+    try std.testing.expectEqualStrings(":id", id.key);
     try std.testing.expectEqual(null, id.value);
     try std.testing.expect(null != id.matcher);
     try std.testing.expectEqual(false, id.matcher.?.isWildcard);
@@ -315,7 +315,7 @@ test "parsePath: split into variable Nodes with two variables" {
     try std.testing.expectEqual(1, child.children.items.len);
 
     const name = child.children.items[0];
-    try std.testing.expectEqualStrings("{name}", name.key);
+    try std.testing.expectEqualStrings(":name", name.key);
     try std.testing.expectEqual(1, name.value);
     try std.testing.expectEqual(0, name.children.items.len);
     try std.testing.expect(null != name.matcher);
