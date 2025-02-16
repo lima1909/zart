@@ -10,11 +10,10 @@ pub fn Node(comptime V: type) type {
         key: []const u8,
         value: ?V = null,
         children: std.ArrayList(*Self),
+        allocator: Allocator,
 
         // handle variables
         matcher: ?vars.Parsed = null,
-
-        allocator: Allocator,
 
         pub fn init(allocator: Allocator, key: []const u8, value: ?V) !*Self {
             const node = try allocator.create(Self);

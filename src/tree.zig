@@ -111,10 +111,14 @@ pub fn Tree(comptime V: type) type {
             }
         }
 
-        pub fn resolve(self: *Self, path: []const u8) ?V {
+        /// Resolve the given path for finding the value and collect potential variables.
+        /// Hint: the are only 3 variables per path possible!
+        pub fn resolve(self: *Self, path: []const u8) Matched(V) {
+            var matched = Matched(V){};
+
             // no root and no input path -> not found
             if (self.root == null or path.len == 0) {
-                return null;
+                return matched;
             }
 
             var current: *Node(V) = self.root.?;
@@ -124,9 +128,11 @@ pub fn Tree(comptime V: type) type {
                 // the match is on the current node, e.g. root-node
                 if (current.matcher) |matcher| {
                     const vr = matcher.match(remains);
+                    matched.addVariable(vr);
                     remains = remains[vr.value.len..];
                     if (remains.len == 0) {
-                        return current.value;
+                        matched.value = current.value;
+                        return matched;
                     }
 
                     if (current.children.items.len > 0) {
@@ -139,7 +145,8 @@ pub fn Tree(comptime V: type) type {
 
                 // found the wanted node and return the value
                 if (std.mem.eql(u8, current.key, remains)) {
-                    return current.value;
+                    matched.value = current.value;
+                    return matched;
                 }
                 //
                 // traverse the tree down for the next try
@@ -153,9 +160,11 @@ pub fn Tree(comptime V: type) type {
                             const child = current.children.items[0];
                             if (child.matcher != null) {
                                 const vr = child.matcher.?.match(remains);
+                                matched.addVariable(vr);
                                 remains = remains[vr.value.len..];
                                 if (remains.len == 0) {
-                                    return child.value;
+                                    matched.value = child.value;
+                                    return matched;
                                 }
 
                                 if (child.children.items.len > 0) {
@@ -173,12 +182,12 @@ pub fn Tree(comptime V: type) type {
                     }
 
                     // not found
-                    return null;
+                    return matched;
                 }
                 //
                 // no remains left -> not found
                 else {
-                    return null;
+                    return matched;
                 }
             }
         }
@@ -216,6 +225,36 @@ test "commonPrefixLen" {
     try std.testing.expectEqual(2, commonPrefixLen(l[1..3], r[1..4]));
 }
 
+pub fn Matched(comptime V: type) type {
+    return struct {
+        const Self = @This();
+
+        value: ?V = null,
+        // only support for 3 variables!!!
+        vars: [3]vars.Variable = undefined,
+        idx: u8 = 0,
+
+        pub inline fn addVariable(self: *Self, v: vars.Variable) void {
+            self.vars[self.idx] = v;
+            self.idx += 1;
+        }
+
+        pub fn get(self: *const Self, key: []const u8) ?[]const u8 {
+            if (key.len == 0) {
+                return null;
+            }
+
+            for (self.vars) |v| {
+                if (std.mem.eql(u8, v.key, key)) {
+                    return v.value;
+                }
+            }
+
+            return null;
+        }
+    };
+}
+
 test "only root param" {
     var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
     defer tree.deinit();
@@ -227,7 +266,11 @@ test "only root param" {
     try std.testing.expectEqual(0, tree.root.?.children.items.len);
 
     // resolving
-    try std.testing.expectEqual(96, tree.resolve("jasmin"));
+    const r = tree.resolve("jasmin");
+    try std.testing.expectEqual(96, r.value);
+    try std.testing.expectEqualDeep("jasmin", r.get("name"));
+    try std.testing.expectEqual(null, r.get(""));
+    try std.testing.expectEqual(null, r.get("invalid"));
 }
 
 test "root param starts with slash" {
@@ -246,7 +289,9 @@ test "root param starts with slash" {
     try std.testing.expectEqual(0, name.children.items.len);
 
     // resolving
-    try std.testing.expectEqual(99, tree.resolve("/petra"));
+    const r = tree.resolve("/petra");
+    try std.testing.expectEqual(99, r.value);
+    try std.testing.expectEqualDeep("petra", r.get("name"));
 }
 
 test "root param with prefix" {
@@ -265,7 +310,9 @@ test "root param with prefix" {
     try std.testing.expectEqual(0, id.children.items.len);
 
     // resolving
-    try std.testing.expectEqual(1, tree.resolve("/user/42"));
+    const r = tree.resolve("/user/42");
+    try std.testing.expectEqual(1, r.value);
+    try std.testing.expectEqualDeep("42", r.get("id"));
 }
 
 test "root paramn with suffix" {
@@ -286,7 +333,9 @@ test "root paramn with suffix" {
     try std.testing.expectEqual(0, user.children.items.len);
 
     // resolving
-    try std.testing.expectEqual(1, tree.resolve("42/user/"));
+    const r = tree.resolve("42/user/");
+    try std.testing.expectEqual(1, r.value);
+    try std.testing.expectEqualDeep("42", r.get("id"));
 }
 
 test "root paramn in between" {
@@ -313,7 +362,9 @@ test "root paramn in between" {
     try std.testing.expectEqual(0, user.children.items.len);
 
     // resolving
-    try std.testing.expectEqual(1, tree.resolve("/prefix/42/user/"));
+    const r = tree.resolve("/prefix/42/user/");
+    try std.testing.expectEqual(1, r.value);
+    try std.testing.expectEqualDeep("42", r.get("id"));
 }
 
 test "root with two params" {
@@ -344,7 +395,10 @@ test "root with two params" {
     try std.testing.expectEqual(0, name.children.items.len);
 
     // resolving
-    try std.testing.expectEqual(1, tree.resolve("/user/42/paul"));
+    const r = tree.resolve("/user/42/paul");
+    try std.testing.expectEqual(1, r.value);
+    try std.testing.expectEqualDeep("42", r.get("id"));
+    try std.testing.expectEqualDeep("paul", r.get("name"));
 }
 
 test "params: only root with two params and one node between" {
@@ -353,7 +407,10 @@ test "params: only root with two params and one node between" {
 
     try tree.insert("/user/{id}/with/{name}", 77);
 
-    try std.testing.expectEqual(77, tree.resolve("/user/42/with/paul"));
+    const r = tree.resolve("/user/42/with/paul");
+    try std.testing.expectEqual(77, r.value);
+    try std.testing.expectEqualDeep("42", r.get("id"));
+    try std.testing.expectEqualDeep("paul", r.get("name"));
 }
 
 test "params: root with child" {
@@ -375,9 +432,12 @@ test "params: root with child" {
     try std.testing.expect(id.matcher != null);
 
     // resolving
-    try std.testing.expectEqual(null, tree.resolve("/foo/"));
-    try std.testing.expectEqual(1, tree.resolve("/user/"));
-    try std.testing.expectEqual(2, tree.resolve("/user/007"));
+    try std.testing.expectEqual(null, tree.resolve("/foo/").value);
+    try std.testing.expectEqual(1, tree.resolve("/user/").value);
+
+    const r = tree.resolve("/user/007");
+    try std.testing.expectEqual(2, r.value);
+    try std.testing.expectEqualDeep("007", r.get("id"));
 }
 
 test "params: root with two child" {
@@ -390,40 +450,39 @@ test "params: root with two child" {
 
     try std.testing.expectEqualStrings("/", tree.root.?.key);
     try std.testing.expectEqual(null, tree.root.?.value);
-    // try std.testing.expectEqual(false, tree.root.hasParamChild);
     try std.testing.expectEqual(2, tree.root.?.children.items.len);
 
     const user = tree.root.?.children.items[0];
     try std.testing.expectEqualStrings("user/", user.key);
     try std.testing.expectEqual(1, user.value);
-    // try std.testing.expectEqual(true, user.hasParamChild);
     try std.testing.expectEqual(1, user.children.items.len);
 
     const id = user.children.items[0];
     try std.testing.expectEqualStrings("{id}", id.key);
     try std.testing.expectEqual(3, id.value);
-    // try std.testing.expectEqual(false, id.hasParamChild);
     try std.testing.expectEqual(0, id.children.items.len);
 
     const group = tree.root.?.children.items[1];
     try std.testing.expectEqualStrings("group/", group.key);
     try std.testing.expectEqual(2, group.value);
-    // try std.testing.expectEqual(false, group.hasParamChild);
     try std.testing.expectEqual(0, group.children.items.len);
 
     // resolving
-    try std.testing.expectEqual(1, tree.resolve("/user/"));
-    try std.testing.expectEqual(2, tree.resolve("/group/"));
-    try std.testing.expectEqual(3, tree.resolve("/user/33"));
+    try std.testing.expectEqual(1, tree.resolve("/user/").value);
+    try std.testing.expectEqual(2, tree.resolve("/group/").value);
+
+    const r = tree.resolve("/user/33");
+    try std.testing.expectEqual(3, r.value);
+    try std.testing.expectEqualDeep("33", r.get("id"));
 }
 
 test "resolve: empty tree" {
     var tree = Tree(i32).init(std.testing.allocator, .{});
     defer tree.deinit();
 
-    try std.testing.expectEqual(null, tree.resolve("not-found"));
-    try std.testing.expectEqual(null, tree.resolve("root"));
-    try std.testing.expectEqual(null, tree.resolve(""));
+    try std.testing.expectEqual(null, tree.resolve("not-found").value);
+    try std.testing.expectEqual(null, tree.resolve("root").value);
+    try std.testing.expectEqual(null, tree.resolve("").value);
 }
 
 test "resolve: only root" {
@@ -432,11 +491,11 @@ test "resolve: only root" {
 
     try tree.insert("root", 1);
 
-    try std.testing.expectEqual(1, tree.resolve("root"));
-    try std.testing.expectEqual(null, tree.resolve("foo"));
+    try std.testing.expectEqual(1, tree.resolve("root").value);
+    try std.testing.expectEqual(null, tree.resolve("foo").value);
 
     // resolving
-    try std.testing.expectEqual(1, tree.resolve("root").?);
+    try std.testing.expectEqual(1, tree.resolve("root").value);
 }
 
 test "init: empty root" {
@@ -445,8 +504,8 @@ test "init: empty root" {
 
     try std.testing.expectEqual(null, tree.root);
 
-    try std.testing.expectEqual(null, tree.resolve(""));
-    try std.testing.expectEqual(null, tree.resolve("foo"));
+    try std.testing.expectEqual(null, tree.resolve("").value);
+    try std.testing.expectEqual(null, tree.resolve("foo").value);
 }
 
 test "only root: app" {
@@ -459,8 +518,8 @@ test "only root: app" {
     try std.testing.expectEqual(0, tree.root.?.children.items.len);
 
     // resolving
-    try std.testing.expectEqual(null, tree.resolve(""));
-    try std.testing.expectEqual(1, tree.resolve("app"));
+    try std.testing.expectEqual(null, tree.resolve("").value);
+    try std.testing.expectEqual(1, tree.resolve("app").value);
 }
 
 test "app + apple ==> app -> le" {
@@ -480,13 +539,13 @@ test "app + apple ==> app -> le" {
     try std.testing.expectEqual(0, child.children.items.len);
 
     // resolve
-    try std.testing.expectEqual(1, tree.resolve("app"));
-    try std.testing.expectEqual(5, tree.resolve("apple"));
-    try std.testing.expectEqual(null, tree.resolve("le"));
+    try std.testing.expectEqual(1, tree.resolve("app").value);
+    try std.testing.expectEqual(5, tree.resolve("apple").value);
+    try std.testing.expectEqual(null, tree.resolve("le").value);
 
     // resolving
-    try std.testing.expectEqual(1, tree.resolve("app"));
-    try std.testing.expectEqual(5, tree.resolve("apple"));
+    try std.testing.expectEqual(1, tree.resolve("app").value);
+    try std.testing.expectEqual(5, tree.resolve("apple").value);
 }
 
 test "apple + app ==> app -> le" {
@@ -506,8 +565,8 @@ test "apple + app ==> app -> le" {
     try std.testing.expectEqual(0, child.children.items.len);
 
     // resolve
-    try std.testing.expectEqual(1, tree.resolve("app"));
-    try std.testing.expectEqual(5, tree.resolve("apple"));
+    try std.testing.expectEqual(1, tree.resolve("app").value);
+    try std.testing.expectEqual(5, tree.resolve("apple").value);
 }
 
 test "apple + appx ==> app -> le & x" {
@@ -531,12 +590,12 @@ test "apple + appx ==> app -> le & x" {
     try std.testing.expectEqual(0, x.children.items.len);
 
     // resolve
-    try std.testing.expectEqual(1, tree.resolve("appx"));
-    try std.testing.expectEqual(5, tree.resolve("apple"));
-    try std.testing.expectEqual(null, tree.resolve("app"));
-    try std.testing.expectEqual(null, tree.resolve("le"));
-    try std.testing.expectEqual(null, tree.resolve("x"));
-    try std.testing.expectEqual(null, tree.resolve("foo"));
+    try std.testing.expectEqual(1, tree.resolve("appx").value);
+    try std.testing.expectEqual(5, tree.resolve("apple").value);
+    try std.testing.expectEqual(null, tree.resolve("app").value);
+    try std.testing.expectEqual(null, tree.resolve("le").value);
+    try std.testing.expectEqual(null, tree.resolve("x").value);
+    try std.testing.expectEqual(null, tree.resolve("foo").value);
 }
 
 test "app + foo ==> app & foo" {
@@ -561,9 +620,9 @@ test "app + foo ==> app & foo" {
     try std.testing.expectEqual(0, foo.children.items.len);
 
     // resolve
-    try std.testing.expectEqual(null, tree.resolve(""));
-    try std.testing.expectEqual(1, tree.resolve("app"));
-    try std.testing.expectEqual(5, tree.resolve("foo"));
+    try std.testing.expectEqual(null, tree.resolve("").value);
+    try std.testing.expectEqual(1, tree.resolve("app").value);
+    try std.testing.expectEqual(5, tree.resolve("foo").value);
 }
 
 test "app + apple + foo ==> app -> le  & foo" {
@@ -594,12 +653,12 @@ test "app + apple + foo ==> app -> le  & foo" {
     try std.testing.expectEqual(0, foo.children.items.len);
 
     // resolve
-    try std.testing.expectEqual(null, tree.resolve(""));
-    try std.testing.expectEqual(1, tree.resolve("app"));
-    try std.testing.expectEqual(2, tree.resolve("apple"));
-    try std.testing.expectEqual(5, tree.resolve("foo"));
-    try std.testing.expectEqual(null, tree.resolve("le"));
-    try std.testing.expectEqual(null, tree.resolve("applex"));
+    try std.testing.expectEqual(null, tree.resolve("").value);
+    try std.testing.expectEqual(1, tree.resolve("app").value);
+    try std.testing.expectEqual(2, tree.resolve("apple").value);
+    try std.testing.expectEqual(5, tree.resolve("foo").value);
+    try std.testing.expectEqual(null, tree.resolve("le").value);
+    try std.testing.expectEqual(null, tree.resolve("applex").value);
 }
 
 test "apple + app + ap ==> ap -> p -> le" {
@@ -625,10 +684,10 @@ test "apple + app + ap ==> ap -> p -> le" {
     try std.testing.expectEqual(0, child_le.children.items.len);
 
     // resolve
-    try std.testing.expectEqual(null, tree.resolve(""));
-    try std.testing.expectEqual(2, tree.resolve("app"));
-    try std.testing.expectEqual(1, tree.resolve("apple"));
-    try std.testing.expectEqual(3, tree.resolve("ap"));
+    try std.testing.expectEqual(null, tree.resolve("").value);
+    try std.testing.expectEqual(2, tree.resolve("app").value);
+    try std.testing.expectEqual(1, tree.resolve("apple").value);
+    try std.testing.expectEqual(3, tree.resolve("ap").value);
 }
 
 test "aappzz + aa + aappxx ==> aa -> pp -> xx & zz" {
@@ -658,10 +717,10 @@ test "aappzz + aa + aappxx ==> aa -> pp -> xx & zz" {
     try std.testing.expectEqual(0, xx.children.items.len);
 
     // resolve
-    try std.testing.expectEqual(null, tree.resolve(""));
-    try std.testing.expectEqual(1, tree.resolve("aappzz"));
-    try std.testing.expectEqual(2, tree.resolve("aa"));
-    try std.testing.expectEqual(3, tree.resolve("aappxx"));
-    try std.testing.expectEqual(null, tree.resolve("xx"));
-    try std.testing.expectEqual(null, tree.resolve("zz"));
+    try std.testing.expectEqual(null, tree.resolve("").value);
+    try std.testing.expectEqual(1, tree.resolve("aappzz").value);
+    try std.testing.expectEqual(2, tree.resolve("aa").value);
+    try std.testing.expectEqual(3, tree.resolve("aappxx").value);
+    try std.testing.expectEqual(null, tree.resolve("xx").value);
+    try std.testing.expectEqual(null, tree.resolve("zz").value);
 }
