@@ -107,6 +107,11 @@ pub fn Tree(comptime V: type) type {
                     return;
                 }
 
+                // found last node, the leaf
+                if (len_prefix == remains.len) {
+                    current.value = value;
+                }
+
                 return;
             }
         }
@@ -723,4 +728,85 @@ test "aappzz + aa + aappxx ==> aa -> pp -> xx & zz" {
     try std.testing.expectEqual(3, tree.resolve("aappxx").value);
     try std.testing.expectEqual(null, tree.resolve("xx").value);
     try std.testing.expectEqual(null, tree.resolve("zz").value);
+}
+
+test "complex router" {
+    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
+    defer tree.deinit();
+
+    try tree.insert("/", 0);
+    try tree.insert("/cmd/:tool/:sub", 1);
+    try tree.insert("/cmd/:tool/", 2);
+
+    try tree.insert("/src/*filepath", 3);
+    try tree.insert("/search/", 4);
+    try tree.insert("/search/:query", 5);
+
+    try tree.insert("/user_:name", 6);
+    try tree.insert("/user_:name/about", 7);
+    try tree.insert("/files/:dir/*filepath", 8);
+
+    try tree.insert("/doc/", 9);
+    try tree.insert("/doc/go_faq.html", 10);
+    try tree.insert("/doc/go1.html", 11);
+
+    try tree.insert("/info/:user/public", 12);
+    try tree.insert("/info/:user/project/:project", 13);
+
+    // --- resolve ---
+    try std.testing.expectEqual(0, tree.resolve("/").value);
+    try std.testing.expectEqualDeep(Matched(i32){
+        .value = 1,
+        .vars = [3]vars.Variable{ .{ .key = "tool", .value = "zig" }, .{ .key = "sub", .value = "build" }, undefined },
+        .idx = 2,
+    }, tree.resolve("/cmd/zig/build"));
+    try std.testing.expectEqualDeep(Matched(i32){
+        .value = 2,
+        .vars = [3]vars.Variable{ .{ .key = "tool", .value = "zig" }, undefined, undefined },
+        .idx = 1,
+    }, tree.resolve("/cmd/zig/"));
+
+    //
+    try std.testing.expectEqualDeep(Matched(i32){
+        .value = 3,
+        .vars = [3]vars.Variable{ .{ .key = "filepath", .value = "in/src/my.zig" }, undefined, undefined },
+        .idx = 1,
+    }, tree.resolve("/src/in/src/my.zig"));
+    try std.testing.expectEqual(4, tree.resolve("/search/").value);
+    try std.testing.expectEqual(5, tree.resolve("/search/qfoo").value);
+
+    //
+    try std.testing.expectEqualDeep(Matched(i32){
+        .value = 6,
+        .vars = [3]vars.Variable{ .{ .key = "name", .value = "egon" }, undefined, undefined },
+        .idx = 1,
+    }, tree.resolve("/user_egon"));
+    try std.testing.expectEqualDeep(Matched(i32){
+        .value = 7,
+        .vars = [3]vars.Variable{ .{ .key = "name", .value = "jasmin" }, undefined, undefined },
+        .idx = 1,
+    }, tree.resolve("/user_jasmin/about"));
+    try std.testing.expectEqualDeep(Matched(i32){
+        .value = 8,
+        .vars = [3]vars.Variable{ .{ .key = "dir", .value = "cwd" }, .{ .key = "filepath", .value = "zig/build/my.zig" }, undefined },
+        .idx = 2,
+    }, tree.resolve("/files/cwd/zig/build/my.zig"));
+
+    //
+    try std.testing.expectEqual(9, tree.resolve("/doc/").value);
+    try std.testing.expectEqual(10, tree.resolve("/doc/go_faq.html").value);
+    try std.testing.expectEqual(11, tree.resolve("/doc/go1.html").value);
+
+    //
+    // try std.testing.expectEqualDeep(Matched(i32){
+    //     .value = 12,
+    //     .vars = [3]vars.Variable{ .{ .key = "user", .value = "me" }, undefined, undefined },
+    //     .idx = 1,
+    // }, tree.resolve("/info/me/public"));
+    // try tree.insert("/info/:user/public", 12);
+    try std.testing.expectEqualDeep(Matched(i32){
+        .value = 13,
+        .vars = [3]vars.Variable{ .{ .key = "user", .value = "me" }, .{ .key = "project", .value = "zart" }, undefined },
+        .idx = 2,
+    }, tree.resolve("/info/me/project/zart"));
 }
