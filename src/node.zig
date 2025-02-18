@@ -163,6 +163,11 @@ pub inline fn parsePath(comptime V: type, allocator: Allocator, p: ?vars.parse, 
         }
     }
 
+    if (remains.len > 0) {
+        const child = try Node(V).init(allocator, remains, value);
+        try current.?.children.append(child);
+    }
+
     return root;
 }
 
@@ -264,7 +269,13 @@ test "parsePath: variable with suffix" {
     try std.testing.expectEqual(null, node.value);
     try std.testing.expect(null != node.matcher);
     try std.testing.expectEqual(false, node.matcher.?.isWildcard);
-    try std.testing.expectEqual(0, node.children.items.len);
+    try std.testing.expectEqual(1, node.children.items.len);
+
+    const user = node.children.items[0];
+    try std.testing.expectEqualStrings("/user/", user.key);
+    try std.testing.expectEqual(1, user.value);
+    try std.testing.expect(null == user.matcher);
+    try std.testing.expectEqual(0, user.children.items.len);
 
     try std.testing.expectEqualDeep(vars.Variable{ .key = "id", .value = "42" }, node.matcher.?.match("42/name"));
 }
@@ -284,7 +295,13 @@ test "parsePath: variable in between" {
     try std.testing.expectEqual(null, id.value);
     try std.testing.expect(null != id.matcher);
     try std.testing.expectEqual(false, id.matcher.?.isWildcard);
-    try std.testing.expectEqual(0, id.children.items.len);
+    try std.testing.expectEqual(1, id.children.items.len);
+
+    const name = id.children.items[0];
+    try std.testing.expectEqualStrings("/name", name.key);
+    try std.testing.expectEqual(1, name.value);
+    try std.testing.expectEqual(null, name.matcher);
+    try std.testing.expectEqual(0, name.children.items.len);
 
     try std.testing.expectEqualDeep(vars.Variable{ .key = "id", .value = "42" }, id.matcher.?.match("42/name"));
 }

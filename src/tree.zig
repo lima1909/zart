@@ -56,12 +56,12 @@ pub fn Tree(comptime V: type) type {
             // first step, root doesn't exist -> create root node
             if (self.root == null) {
                 // if an parser is set, then parse the given key, if he contains variables
-                if (try parsePath(V, self.allocator, self.parser, key, value)) |node| {
-                    self.root = node;
-                } else {
-                    self.root = try Node(V).init(self.allocator, key, value);
-                    return;
-                }
+                self.root = if (try parsePath(V, self.allocator, self.parser, key, value)) |node|
+                    node
+                else
+                    try Node(V).init(self.allocator, key, value);
+
+                return;
             }
 
             var current: *Node(V) = self.root.?;
@@ -88,6 +88,12 @@ pub fn Tree(comptime V: type) type {
                     try current.splitCurrentNode(remains, len_prefix, value);
                 }
 
+                // found last node, the leaf
+                if (len_prefix == remains.len) {
+                    current.value = value;
+                    return;
+                }
+
                 // traverse the tree down
                 if (len_prefix < remains.len) {
                     remains = remains[len_prefix..];
@@ -105,11 +111,6 @@ pub fn Tree(comptime V: type) type {
                     const new_child = try Node(V).init(self.allocator, remains, value);
                     try current.children.append(new_child);
                     return;
-                }
-
-                // found last node, the leaf
-                if (len_prefix == remains.len) {
-                    current.value = value;
                 }
 
                 return;
@@ -422,8 +423,8 @@ test "params: root with child" {
     var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
     defer tree.deinit();
 
-    try tree.insert("/user/", 1);
     try tree.insert("/user/:id", 2);
+    try tree.insert("/user/", 1);
 
     try std.testing.expectEqualStrings("/user/", tree.root.?.key);
     try std.testing.expectEqual(1, tree.root.?.value);
@@ -798,12 +799,12 @@ test "complex router" {
     try std.testing.expectEqual(11, tree.resolve("/doc/go1.html").value);
 
     //
-    // try std.testing.expectEqualDeep(Matched(i32){
-    //     .value = 12,
-    //     .vars = [3]vars.Variable{ .{ .key = "user", .value = "me" }, undefined, undefined },
-    //     .idx = 1,
-    // }, tree.resolve("/info/me/public"));
-    // try tree.insert("/info/:user/public", 12);
+    try std.testing.expectEqualDeep(Matched(i32){
+        .value = 12,
+        .vars = [3]vars.Variable{ .{ .key = "user", .value = "me" }, undefined, undefined },
+        .idx = 1,
+    }, tree.resolve("/info/me/public"));
+
     try std.testing.expectEqualDeep(Matched(i32){
         .value = 13,
         .vars = [3]vars.Variable{ .{ .key = "user", .value = "me" }, .{ .key = "project", .value = "zart" }, undefined },
