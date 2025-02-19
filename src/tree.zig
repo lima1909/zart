@@ -45,7 +45,7 @@ pub fn Tree(comptime V: type) type {
             return .{ .allocator = allocator, .parser = cfg.parser };
         }
 
-        fn deinit(self: *Self) void {
+        pub fn deinit(self: Self) void {
             if (self.root) |root| {
                 root.deinit();
             }

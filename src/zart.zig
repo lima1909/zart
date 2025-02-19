@@ -5,6 +5,7 @@ test {
     _ = @import("./vars.zig");
     _ = @import("./node.zig");
     _ = @import("./tree.zig");
+    _ = @import("./router.zig");
 }
 
 // - find first wildcard = parsePath() -> (prefix, suffix, KEY) OR None OR Error
