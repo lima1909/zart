@@ -119,7 +119,7 @@ pub fn Tree(comptime V: type) type {
 
         /// Resolve the given path for finding the value and collect potential variables.
         /// Hint: the are only 3 variables per path possible!
-        pub fn resolve(self: *Self, path: []const u8) Matched(V) {
+        pub fn resolve(self: *const Self, path: []const u8) Matched(V) {
             var matched = Matched(V){};
 
             // no root and no input path -> not found
@@ -198,7 +198,7 @@ pub fn Tree(comptime V: type) type {
             }
         }
 
-        pub fn print(self: *Self) void {
+        pub fn print(self: *const Self) void {
             if (self.root) |root| {
                 root.print();
             } else {

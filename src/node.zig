@@ -31,7 +31,7 @@ pub fn Node(comptime V: type) type {
         }
 
         /// Find and returns the edge for a given letter or null, if not found.
-        pub fn edge(self: *Self, l: u8) ?*Self {
+        pub fn edge(self: *const Self, l: u8) ?*Self {
             for (self.children.items) |child| {
                 if (child.key[0] == l) {
                     return child;
@@ -46,7 +46,7 @@ pub fn Node(comptime V: type) type {
         //     (new_root)
         //        /\
         //     app  foo
-        pub inline fn newEmptyRoot(self: *Self, path: []const u8, value: V) !Self {
+        pub inline fn newEmptyRoot(self: *const Self, path: []const u8, value: V) !Self {
             var root = Self{
                 .allocator = self.allocator,
                 .children = std.ArrayList(*Self).init(self.allocator),
@@ -81,11 +81,11 @@ pub fn Node(comptime V: type) type {
             try self.children.append(child);
         }
 
-        pub fn print(self: *Self) void {
+        pub fn print(self: *const Self) void {
             self.printIndent(0);
         }
 
-        fn printIndent(self: *Self, indent: u8) void {
+        fn printIndent(self: *const Self, indent: u8) void {
             for (0..indent) |_| {
                 std.debug.print("\t", .{});
             }
