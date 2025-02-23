@@ -5,21 +5,47 @@ const Tree = @import("tree.zig").Tree;
 
 const Allocator = std.mem.Allocator;
 
-pub fn Context(comptime Request: type) type {
-    return struct {
-        request: Request,
-        params: [3]vars.Variable = undefined,
-    };
-}
+// fn user(req: *HttpRequest) anyerror!void {
+// fn user(req: *HttpRequest, params: Params) anyerror!void {
+// fn user(user: JsonBody(User), params: Params) anyerror!void {
 
-pub fn Router(comptime Request: type) type {
-    //
-    const Handler = *const fn (Context(Request)) anyerror!void;
+pub fn Handler(comptime Request: type) type {
+    const HandlerFn = union(enum) {
+        request: *const fn (Request) anyerror!void,
+        requestWithParams: *const fn (Request, [3]vars.Variable) anyerror!void,
+    };
 
     return struct {
         const Self = @This();
 
-        _get: Tree(Handler),
+        handler: HandlerFn,
+
+        pub fn fromFunc(func: anytype) Self {
+            const meta = @typeInfo(@TypeOf(func));
+            if (meta != .Fn) @compileError("Handler only accepts functions");
+            if (meta.Fn.params[0].type != Request) @compileError("Handler only accepts functions");
+
+            switch (meta.Fn.params.len) {
+                1 => return .{ .handler = HandlerFn{ .request = func } },
+                2 => return .{ .handler = HandlerFn{ .requestWithParams = func } },
+                else => @compileError("Handler function must have 1 or 2 parameters, not more: " ++ meta.Fn.params.len),
+            }
+        }
+
+        pub fn exec(self: *const Self, req: Request, params: [3]vars.Variable) anyerror!void {
+            switch (self.handler) {
+                HandlerFn.request => |hanlde| try hanlde(req),
+                HandlerFn.requestWithParams => |hanlde| try hanlde(req, params),
+            }
+        }
+    };
+}
+
+pub fn Router(comptime Request: type) type {
+    return struct {
+        const Self = @This();
+
+        _get: Tree(Handler(Request)),
         // error_handler
         // not_found_handler
 
@@ -29,7 +55,7 @@ pub fn Router(comptime Request: type) type {
             const cfg = .{ .parser = vars.matchitParser };
             return .{
                 .allocator = allocator,
-                ._get = Tree(Handler).init(allocator, cfg),
+                ._get = Tree(Handler(Request)).init(allocator, cfg),
             };
         }
 
@@ -37,14 +63,15 @@ pub fn Router(comptime Request: type) type {
             self._get.deinit();
         }
 
-        pub fn get(self: *Self, path: []const u8, handler: Handler) !void {
+        pub fn get(self: *Self, path: []const u8, comptime func: anytype) !void {
+            const handler = Handler(Request).fromFunc(func);
             try self._get.insert(path, handler);
         }
 
         pub fn resolve(self: *const Self, path: []const u8, req: Request) void {
             const matched = self._get.resolve(path);
             if (matched.value) |handler| {
-                handler(Context(Request){ .request = req, .params = matched.vars }) catch |err| {
+                handler.exec(req, matched.vars) catch |err| {
                     // TODO: replace this with an error handler
                     std.debug.print("ERROR by call handler: {}\n", .{err});
                 };
@@ -60,12 +87,12 @@ test "router for i32" {
     defer router.deinit();
 
     const Example = struct {
-        fn foo(ctx: Context(*i32)) anyerror!void {
-            ctx.request.* += 1;
+        fn addOne(i: *i32) anyerror!void {
+            i.* += 1;
         }
     };
 
-    try router.get("/foo", Example.foo);
+    try router.get("/foo", Example.addOne);
 
     var i: i32 = 3;
     router.resolve("/foo", &i);
@@ -80,15 +107,15 @@ test "router std.http.Server.Request" {
     defer router.deinit();
 
     const Example = struct {
-        fn user(ctx: Context(*HttpRequest)) anyerror!void {
-            ctx.request.head.keep_alive = true;
+        fn user(req: *HttpRequest, params: [3]vars.Variable) anyerror!void {
+            req.head.keep_alive = true;
 
-            const id = ctx.params[0];
+            const id = params[0];
             try std.testing.expectEqualStrings("id", id.key);
             try std.testing.expectEqualStrings("42", id.value);
 
-            try std.testing.expectEqualStrings("/user/42", ctx.request.head.target);
-            try std.testing.expectEqual(std.http.Method.GET, ctx.request.head.method);
+            try std.testing.expectEqualStrings("/user/42", req.head.target);
+            try std.testing.expectEqual(std.http.Method.GET, req.head.method);
         }
     };
 
