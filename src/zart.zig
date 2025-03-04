@@ -1,11 +1,11 @@
-const tree = @import("./tree.zig");
-// const std = @import("std");
+pub const tree = @import("./tree.zig");
+pub const vars = @import("./vars.zig");
 
 test {
-    _ = @import("./vars.zig");
     _ = @import("./node.zig");
-    _ = @import("./tree.zig");
     _ = @import("./router.zig");
+    _ = @import("./tree.zig");
+    _ = @import("./vars.zig");
 }
 
 // - find first wildcard = parsePath() -> (prefix, suffix, KEY) OR None OR Error

@@ -3,59 +3,69 @@ const std = @import("std");
 const vars = @import("vars.zig");
 const Tree = @import("tree.zig").Tree;
 
-const Allocator = std.mem.Allocator;
-
-// fn user(req: *HttpRequest) anyerror!void {
-// fn user(req: *HttpRequest, params: Params) anyerror!void {
-// fn user(user: JsonBody(User), params: Params) anyerror!void {
-
-pub fn Handler(comptime Request: type) type {
-    const HandlerFn = union(enum) {
-        request: *const fn (Request) anyerror!void,
-        requestWithParams: *const fn (Request, [3]vars.Variable) anyerror!void,
-    };
-
+pub fn Handler(comptime App: type, comptime Request: type) type {
     return struct {
-        const Self = @This();
-
-        handler: HandlerFn,
-
-        pub fn fromFunc(func: anytype) Self {
-            const meta = @typeInfo(@TypeOf(func));
-            if (meta != .Fn) @compileError("Handler only accepts functions");
-            if (meta.Fn.params[0].type != Request) @compileError("Handler only accepts functions");
-
-            switch (meta.Fn.params.len) {
-                1 => return .{ .handler = HandlerFn{ .request = func } },
-                2 => return .{ .handler = HandlerFn{ .requestWithParams = func } },
-                else => @compileError("Handler function must have 1 or 2 parameters, not more: " ++ meta.Fn.params.len),
-            }
-        }
-
-        pub fn exec(self: *const Self, req: Request, params: [3]vars.Variable) anyerror!void {
-            switch (self.handler) {
-                HandlerFn.request => |hanlde| try hanlde(req),
-                HandlerFn.requestWithParams => |hanlde| try hanlde(req, params),
-            }
-        }
+        handle: *const fn (app: ?App, req: Request, params: [3]vars.Variable) anyerror!void,
     };
 }
 
-pub fn Router(comptime Request: type) type {
+pub fn handlerFromFn(comptime App: type, comptime Request: type, func: anytype) Handler(App, Request) {
+    const meta = @typeInfo(@TypeOf(func));
+    const argsLen = meta.Fn.params.len;
+
+    switch (argsLen) {
+        0 => @compileError("Function must have at least one parameter"),
+        1, 2, 3 => {},
+        else => @compileError("Function with more then 3 parameter are not supported"),
+    }
+
+    const indexRequest: usize = if (argsLen == 3) 1 else 0;
+    const argType = meta.Fn.params[indexRequest].type.?;
+
+    const isRequest = Request == argType;
+    if (!isRequest) {
+        if (std.meta.hasFn(argType, "fromRequest") == false) {
+            @compileError("Missing method .fromRequest for: " ++ @typeName(argType));
+        }
+    }
+
+    const fromRequest: ?*const fn (Request) argType = if (isRequest) null else argType.fromRequest;
+
+    const h = struct {
+        fn handle(app: ?App, req: Request, params: [3]vars.Variable) !void {
+            const request = if (fromRequest) |fr| fr(req) else req;
+            switch (argsLen) {
+                1 => return @call(.auto, func, .{request}),
+                2 => return @call(.auto, func, .{ request, params }),
+                else => return @call(.auto, func, .{ app.?, request, params }),
+            }
+        }
+    };
+
+    return Handler(App, Request){ .handle = h.handle };
+}
+
+pub fn Router(comptime App: type, comptime Request: type) type {
     return struct {
         const Self = @This();
 
-        _get: Tree(Handler(Request)),
+        _app: ?App,
+        _get: Tree(Handler(App, Request)),
         // error_handler
         // not_found_handler
 
-        allocator: Allocator,
+        allocator: std.mem.Allocator,
 
-        pub fn init(allocator: Allocator) Self {
+        pub fn init(allocator: std.mem.Allocator) Self {
+            return initWithApp(allocator, undefined);
+        }
+
+        pub fn initWithApp(allocator: std.mem.Allocator, app: ?App) Self {
             const cfg = .{ .parser = vars.matchitParser };
             return .{
                 .allocator = allocator,
-                ._get = Tree(Handler(Request)).init(allocator, cfg),
+                ._app = app,
+                ._get = Tree(Handler(App, Request)).init(allocator, cfg),
             };
         }
 
@@ -63,15 +73,15 @@ pub fn Router(comptime Request: type) type {
             self._get.deinit();
         }
 
-        pub fn get(self: *Self, path: []const u8, comptime func: anytype) !void {
-            const handler = Handler(Request).fromFunc(func);
+        pub fn get(self: *Self, path: []const u8, handlerFn: anytype) !void {
+            const handler = handlerFromFn(App, Request, handlerFn);
             try self._get.insert(path, handler);
         }
 
         pub fn resolve(self: *const Self, path: []const u8, req: Request) void {
             const matched = self._get.resolve(path);
             if (matched.value) |handler| {
-                handler.exec(req, matched.vars) catch |err| {
+                handler.handle(self._app, req, matched.vars) catch |err| {
                     // TODO: replace this with an error handler
                     std.debug.print("ERROR by call handler: {}\n", .{err});
                 };
@@ -82,12 +92,44 @@ pub fn Router(comptime Request: type) type {
     };
 }
 
+test "router for handler object Body" {
+    const Body = struct {
+        const Self = @This();
+
+        i: *i32,
+
+        pub fn fromRequest(req: *i32) Self {
+            return .{ .i = req };
+        }
+    };
+
+    const Example = struct {
+        fn user(u: Body) anyerror!void {
+            u.i.* += 1;
+        }
+    };
+
+    var router = Router(void, *i32).init(std.testing.allocator);
+    defer router.deinit();
+
+    try router.get("/foo", Example.user);
+
+    var i: i32 = 3;
+    router.resolve("/foo", &i);
+
+    try std.testing.expectEqual(4, i);
+}
+
 test "router for i32" {
-    var router = Router(*i32).init(std.testing.allocator);
+    const App = struct { value: i32 };
+    var app = App{ .value = -1 };
+
+    var router = Router(*App, *i32).initWithApp(std.testing.allocator, &app);
     defer router.deinit();
 
     const Example = struct {
-        fn addOne(i: *i32) anyerror!void {
+        fn addOne(a: *App, i: *i32, _: [3]vars.Variable) anyerror!void {
+            a.value = i.* + 2;
             i.* += 1;
         }
     };
@@ -98,12 +140,13 @@ test "router for i32" {
     router.resolve("/foo", &i);
 
     try std.testing.expectEqual(4, i);
+    try std.testing.expectEqual(5, app.value);
 }
 
 const HttpRequest = std.http.Server.Request;
 
 test "router std.http.Server.Request" {
-    var router = Router(*HttpRequest).init(std.testing.allocator);
+    var router = Router(void, *HttpRequest).init(std.testing.allocator);
     defer router.deinit();
 
     const Example = struct {
