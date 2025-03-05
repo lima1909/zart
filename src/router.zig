@@ -3,6 +3,12 @@ const std = @import("std");
 const vars = @import("vars.zig");
 const Tree = @import("tree.zig").Tree;
 
+// Supported Handler function signatures:
+//   - fn (req: Request)
+//   - fn (req: Request, params: [3]vars.Variable)
+//   - fn (app: App, req: Request, params: [3]vars.Variable)
+//   - fn (app: App, req: Request)
+//
 pub fn Handler(comptime App: type, comptime Request: type) type {
     return struct {
         handle: *const fn (app: ?App, req: Request, params: [3]vars.Variable) anyerror!void,
@@ -14,12 +20,26 @@ pub fn handlerFromFn(comptime App: type, comptime Request: type, func: anytype) 
     const argsLen = meta.Fn.params.len;
 
     switch (argsLen) {
-        0 => @compileError("Function must have at least one parameter"),
-        1, 2, 3 => {},
-        else => @compileError("Function with more then 3 parameter are not supported"),
+        0 => @compileError("Function must have at least one parameter: " ++ @typeName(func)),
+        1, 2 => {},
+        3 => {
+            if (meta.Fn.params[0].type != App) {
+                @compileError("The first argument in the given function must be the App: " ++ @typeName(func));
+            }
+        },
+        else => @compileError("Function with more then 3 parameter are not supported " ++ @typeName(func)),
     }
 
-    const indexRequest: usize = if (argsLen == 3) 1 else 0;
+    // const indexRequest: usize = if (argsLen == 3) 1 else 0;
+    const indexRequest: usize = switch (argsLen) {
+        // only Request
+        1 => 0,
+        // App + Request | Request + params
+        2 => if (meta.Fn.params[0].type == App) return 1 else 0,
+        // App, Request, params (3 Args)
+        else => 1,
+    };
+
     const argType = meta.Fn.params[indexRequest].type.?;
 
     const isRequest = Request == argType;
