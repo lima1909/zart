@@ -65,12 +65,31 @@ pub fn handlerFromFn(comptime App: type, comptime Request: type, func: anytype) 
     return Handler(App, Request){ .handle = h.handle };
 }
 
+pub const Method = enum {
+    GET,
+    POST,
+
+    pub fn fromStdMethod(comptime m: std.http.Method) Method {
+        return switch (m) {
+            .GET => .GET,
+            .POST => .POST,
+            else => |t| @panic("not implemented yet" ++ @tagName(t)),
+        };
+    }
+};
+
 pub fn Router(comptime App: type, comptime Request: type) type {
+    const H = Handler(App, Request);
+
     return struct {
         const Self = @This();
 
         _app: ?App,
-        _get: Tree(Handler(App, Request)),
+
+        // methods
+        _get: Tree(H),
+        _post: Tree(H),
+
         // error_handler
         // not_found_handler
 
@@ -82,24 +101,34 @@ pub fn Router(comptime App: type, comptime Request: type) type {
 
         pub fn initWithApp(allocator: std.mem.Allocator, app: ?App) Self {
             const cfg = .{ .parser = vars.matchitParser };
+
             return .{
                 .allocator = allocator,
                 ._app = app,
-                ._get = Tree(Handler(App, Request)).init(allocator, cfg),
+                ._get = Tree(H).init(allocator, cfg),
+                ._post = Tree(H).init(allocator, cfg),
             };
         }
 
         pub fn deinit(self: *Self) void {
             self._get.deinit();
+            self._post.deinit();
         }
 
         pub fn get(self: *Self, path: []const u8, handlerFn: anytype) !void {
-            const handler = handlerFromFn(App, Request, handlerFn);
-            try self._get.insert(path, handler);
+            try self.addPath(.GET, path, handlerFn);
         }
 
-        pub fn resolve(self: *const Self, path: []const u8, req: Request) void {
-            const matched = self._get.resolve(path);
+        pub fn post(self: *Self, path: []const u8, handlerFn: anytype) !void {
+            try self.addPath(.POST, path, handlerFn);
+        }
+
+        pub fn resolve(self: *const Self, method: Method, path: []const u8, req: Request) void {
+            const matched = switch (method) {
+                .GET => self._get,
+                .POST => self._post,
+            }.resolve(path);
+
             if (matched.value) |handler| {
                 handler.handle(self._app, req, matched.vars) catch |err| {
                     // TODO: replace this with an error handler
@@ -108,6 +137,14 @@ pub fn Router(comptime App: type, comptime Request: type) type {
             }
 
             // TODO: else NOT FOUND handler
+        }
+
+        inline fn addPath(self: *Self, method: Method, path: []const u8, handlerFn: anytype) !void {
+            const handler = handlerFromFn(App, Request, handlerFn);
+            return try switch (method) {
+                .GET => &self._get,
+                .POST => &self._post,
+            }.insert(path, handler);
         }
     };
 }
@@ -135,7 +172,7 @@ test "router for handler object Body" {
     try router.get("/foo", Example.user);
 
     var i: i32 = 3;
-    router.resolve("/foo", &i);
+    router.resolve(Method.fromStdMethod(std.http.Method.GET), "/foo", &i);
 
     try std.testing.expectEqual(4, i);
 }
@@ -157,7 +194,7 @@ test "router for i32" {
     try router.get("/foo", Example.addOne);
 
     var i: i32 = 3;
-    router.resolve("/foo", &i);
+    router.resolve(.GET, "/foo", &i);
 
     try std.testing.expectEqual(4, i);
     try std.testing.expectEqual(5, app.value);
@@ -182,7 +219,7 @@ test "router std.http.Server.Request" {
         }
     };
 
-    try router.get("/user/:id", Example.user);
+    try router.post("/user/:id", Example.user);
 
     var req = HttpRequest{
         .server = undefined,
@@ -201,7 +238,7 @@ test "router std.http.Server.Request" {
             .compression = undefined,
         },
     };
-    router.resolve("/user/42", &req);
+    router.resolve(.POST, "/user/42", &req);
 
     // the user function set keep_alive = true
     try std.testing.expectEqual(true, req.head.keep_alive);
