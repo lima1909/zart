@@ -5,13 +5,13 @@ const Tree = @import("tree.zig").Tree;
 
 // Supported Handler function signatures:
 //   - fn (req: Request)
-//   - fn (req: Request, params: [3]vars.Variable)
-//   - fn (app: App, req: Request, params: [3]vars.Variable)
+//   - fn (req: Request, params: []vars.Variable)
+//   - fn (app: App, req: Request, params: []vars.Variable)
 //   - fn (app: App, req: Request)
 //
 pub fn Handler(comptime App: type, comptime Request: type) type {
     return struct {
-        handle: *const fn (app: ?App, req: Request, params: [3]vars.Variable) anyerror!void,
+        handle: *const fn (app: ?App, req: Request, params: []const vars.Variable) anyerror!void,
     };
 }
 
@@ -52,7 +52,7 @@ pub fn handlerFromFn(comptime App: type, comptime Request: type, func: anytype) 
     const fromRequest: ?*const fn (Request) argType = if (isRequest) null else argType.fromRequest;
 
     const h = struct {
-        fn handle(app: ?App, req: Request, params: [3]vars.Variable) !void {
+        fn handle(app: ?App, req: Request, params: []const vars.Variable) !void {
             const request = if (fromRequest) |fr| fr(req) else req;
             switch (argsLen) {
                 1 => return @call(.auto, func, .{request}),
@@ -68,12 +68,13 @@ pub fn handlerFromFn(comptime App: type, comptime Request: type, func: anytype) 
 pub const Method = enum {
     GET,
     POST,
+    OTHER,
 
     pub fn fromStdMethod(comptime m: std.http.Method) Method {
         return switch (m) {
             .GET => .GET,
             .POST => .POST,
-            else => |t| @panic("not implemented yet" ++ @tagName(t)),
+            else => |t| @panic("not implemented yet: " ++ @tagName(t)),
         };
     }
 };
@@ -89,6 +90,7 @@ pub fn Router(comptime App: type, comptime Request: type) type {
         // methods
         _get: Tree(H),
         _post: Tree(H),
+        _other: Tree(H),
 
         // error_handler
         // not_found_handler
@@ -107,12 +109,14 @@ pub fn Router(comptime App: type, comptime Request: type) type {
                 ._app = app,
                 ._get = Tree(H).init(allocator, cfg),
                 ._post = Tree(H).init(allocator, cfg),
+                ._other = Tree(H).init(allocator, cfg),
             };
         }
 
         pub fn deinit(self: *Self) void {
             self._get.deinit();
             self._post.deinit();
+            self._other.deinit();
         }
 
         pub fn get(self: *Self, path: []const u8, handlerFn: anytype) !void {
@@ -123,28 +127,30 @@ pub fn Router(comptime App: type, comptime Request: type) type {
             try self.addPath(.POST, path, handlerFn);
         }
 
+        pub inline fn addPath(self: *Self, method: Method, path: []const u8, handlerFn: anytype) !void {
+            const handler = handlerFromFn(App, Request, handlerFn);
+            return try switch (method) {
+                .GET => self._get,
+                .POST => self._post,
+                else => self._other,
+            }.insert(path, handler);
+        }
+
         pub fn resolve(self: *const Self, method: Method, path: []const u8, req: Request) void {
             const matched = switch (method) {
                 .GET => self._get,
                 .POST => self._post,
+                else => self._other,
             }.resolve(path);
 
             if (matched.value) |handler| {
-                handler.handle(self._app, req, matched.vars) catch |err| {
+                handler.handle(self._app, req, &matched.vars) catch |err| {
                     // TODO: replace this with an error handler
                     std.debug.print("ERROR by call handler: {}\n", .{err});
                 };
             }
 
             // TODO: else NOT FOUND handler
-        }
-
-        inline fn addPath(self: *Self, method: Method, path: []const u8, handlerFn: anytype) !void {
-            const handler = handlerFromFn(App, Request, handlerFn);
-            return try switch (method) {
-                .GET => &self._get,
-                .POST => &self._post,
-            }.insert(path, handler);
         }
     };
 }
@@ -185,16 +191,16 @@ test "router for i32" {
     defer router.deinit();
 
     const Example = struct {
-        fn addOne(a: *App, i: *i32, _: [3]vars.Variable) anyerror!void {
+        fn addOne(a: *App, i: *i32, _: []const vars.Variable) anyerror!void {
             a.value = i.* + 2;
             i.* += 1;
         }
     };
 
-    try router.get("/foo", Example.addOne);
+    try router.addPath(.OTHER, "/foo", Example.addOne);
 
     var i: i32 = 3;
-    router.resolve(.GET, "/foo", &i);
+    router.resolve(.OTHER, "/foo", &i);
 
     try std.testing.expectEqual(4, i);
     try std.testing.expectEqual(5, app.value);
@@ -207,7 +213,7 @@ test "router std.http.Server.Request" {
     defer router.deinit();
 
     const Example = struct {
-        fn user(req: *HttpRequest, params: [3]vars.Variable) anyerror!void {
+        fn user(req: *HttpRequest, params: []const vars.Variable) anyerror!void {
             req.head.keep_alive = true;
 
             const id = params[0];
