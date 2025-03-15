@@ -4,6 +4,7 @@ pub const vars = @import("./vars.zig");
 test {
     _ = @import("./node.zig");
     _ = @import("./router.zig");
+    _ = @import("./request.zig");
     _ = @import("./tree.zig");
     _ = @import("./vars.zig");
 }

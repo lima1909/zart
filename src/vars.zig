@@ -5,6 +5,61 @@ pub const Variable = struct {
     value: []const u8,
 };
 
+pub const Variables = struct {
+    const Self = @This();
+
+    vars: []const Variable,
+
+    pub inline fn value(self: *const Self, key: []const u8) ?[]const u8 {
+        for (self.vars) |v| {
+            if (std.mem.eql(u8, key, v.key)) {
+                return v.value;
+            }
+        }
+
+        return null;
+    }
+
+    pub inline fn valueAs(self: *const Self, T: type, key: []const u8) !?T {
+        if (self.value(key)) |v| {
+            return switch (@typeInfo(T)) {
+                .Int => try std.fmt.parseInt(T, v, 10),
+                .Float => try std.fmt.parseFloat(T, v),
+                .Bool => {
+                    if (std.mem.eql(u8, v, "true")) {
+                        return true;
+                    } else if (std.mem.eql(u8, v, "false")) {
+                        return false;
+                    }
+                    return error.InvalidBool;
+                },
+                .Pointer => |p| if (p.child == u8) v else null,
+                else => @compileError("not supported type: " ++ @typeName(T)),
+            };
+        }
+
+        return null;
+    }
+};
+
+test "variables" {
+    const input = [_]Variable{
+        .{ .key = "aint", .value = "42" },
+        .{ .key = "abool", .value = "true" },
+        .{ .key = "afloat", .value = "4.2" },
+        .{ .key = "atxt", .value = "foo" },
+    };
+    const v = Variables{ .vars = &input };
+
+    try std.testing.expectEqual(42, (try v.valueAs(i32, "aint")).?);
+    try std.testing.expectEqual(4.2, (try v.valueAs(f32, "afloat")).?);
+    try std.testing.expectEqual(true, (try v.valueAs(bool, "abool")).?);
+    try std.testing.expectEqual("foo", (try v.valueAs([]const u8, "atxt")).?);
+
+    try std.testing.expectEqualStrings("foo", v.value("atxt").?);
+    try std.testing.expectEqual(null, v.value("not_exist"));
+}
+
 // Parse is the interface for using different implementation of parsing an given 'path'
 // and return the result 'Parsed' and a match function, for resolving the parsed variable.
 pub const parse = *const fn (path: []const u8) ParseError!?Parsed;
