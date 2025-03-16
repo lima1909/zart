@@ -1,28 +1,26 @@
 const std = @import("std");
 
-// curl -X POST http://localhost:8082/user/42 -d "Hello, Zig!"
+const Server = @import("server.zig").Server;
+const Params = @import("request.zig").Params;
+
+// curl -X POST http://localhost:8080/user/42 -d "Hello, Zig!"
 
 pub fn main() !void {
-    const addr = try std.net.Address.resolveIp("127.0.0.1", 8082);
-    var listener = try addr.listen(.{ .reuse_address = true });
-    std.debug.print("Listening on {}\n", .{addr});
-    while (true) {
-        try handleConnection(try listener.accept());
-    }
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
+    var server = Server(void).init(allocator);
+    defer server.deinit();
+
+    var r = server.router();
+    try r.get("/user/:id", user);
+
+    try server.run();
 }
 
-fn handleConnection(conn: std.net.Server.Connection) !void {
-    defer conn.stream.close();
-    var buffer: [1024]u8 = undefined;
-    var http_server = std.http.Server.init(conn, &buffer);
-    var req = try http_server.receiveHead();
-    std.debug.print("Req {s} \n", .{req.head.target});
-
-    var body_buffer: [4096]u8 = undefined;
-    const body_len = try (try req.reader()).readAll(&body_buffer);
-    const body = body_buffer[0..body_len];
-
-    std.debug.print("Received body: {s}\n", .{body});
-
-    try req.respond("hello world\n", std.http.Server.Request.RespondOptions{});
+fn user(r: *std.http.Server.Request, p: Params) !void {
+    std.debug.print("Method: {}\n", .{r.head.method});
+    if (p.value("id")) |v| {
+        std.debug.print("Param ID: {s}\n", .{v});
+    }
 }

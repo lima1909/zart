@@ -95,11 +95,11 @@ pub const Method = enum {
     POST,
     OTHER,
 
-    pub fn fromStdMethod(comptime m: std.http.Method) Method {
+    pub fn fromStdMethod(m: std.http.Method) Method {
         return switch (m) {
             .GET => .GET,
             .POST => .POST,
-            else => |t| @panic("not implemented yet: " ++ @tagName(t)),
+            else => .OTHER, // TODO: maybe throw an error or optional?
         };
     }
 };
