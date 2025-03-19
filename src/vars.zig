@@ -34,7 +34,7 @@ pub const Variables = struct {
                     return error.InvalidBool;
                 },
                 .Pointer => |p| if (p.child == u8) v else null,
-                else => @compileError("not supported type: " ++ @typeName(T)),
+                else => @compileError("not supported type: " ++ @typeName(T) ++ " for key: " ++ key),
             };
         }
 

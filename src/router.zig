@@ -1,18 +1,23 @@
 const std = @import("std");
 
 const Variable = @import("vars.zig").Variable;
-const Variables = @import("vars.zig").Variables;
 const matchitParser = @import("vars.zig").matchitParser;
 
 const Params = @import("request.zig").Params;
+const P = @import("request.zig").P;
+const Queries = @import("request.zig").Queries;
+const Q = @import("request.zig").Q;
+
 const FromVars = @import("request.zig").FromVars;
+const Marker = @import("request.zig").Marker;
+const Kind = @import("request.zig").Kind;
 
 const Tree = @import("tree.zig").Tree;
 
-// Supported Handler function signatures:
+// Examples for Handler function signatures:
 //   - fn (req: Request)
-//   - fn (req: Request, params: Params) || fn (req: Request, params: MyParam)
-//   - fn (app: App, req: Request, params: Params(T))
+//   - fn (req: Request, params: Params)
+//   - fn (app: App, req: Request, params: P(MyParam))
 //   - fn (app: App, req: Request)
 //
 pub fn Handler(comptime App: type, comptime Request: type) type {
@@ -24,66 +29,47 @@ pub fn Handler(comptime App: type, comptime Request: type) type {
 pub fn handlerFromFn(comptime App: type, comptime Request: type, func: anytype) Handler(App, Request) {
     const meta = @typeInfo(@TypeOf(func));
     const argsLen = meta.Fn.params.len;
+    comptime var kinds: [argsLen]Kind = undefined;
 
-    // validate the args
-    switch (argsLen) {
-        0 => @compileError("Function must have at least one parameter: " ++ @typeName(func)),
-        1, 2 => {},
-        3 => {
-            if (meta.Fn.params[0].type != App) {
-                @compileError("The first argument in the given function must be the App: " ++ @typeName(func));
+    inline for (meta.Fn.params, 0..) |p, i| {
+        if (p.type) |ty| {
+            if (ty == App) {
+                kinds[i] = .app;
+            } else if (ty == Request) {
+                kinds[i] = .request;
+            } else if (ty == Params) {
+                kinds[i] = .params;
+            } else if (ty == Queries) {
+                kinds[i] = .queries;
+            } else if (Marker.asKind(ty)) |k| {
+                kinds[i] = k;
+            } else {
+                kinds[i] = Kind{ .fromRequest = .{ .typ = ty } };
             }
-        },
-        else => @compileError("Function with more then 3 parameter are not supported " ++ @typeName(func)),
-    }
-
-    // find the arg index from Request
-    const indexRequest: usize = switch (argsLen) {
-        // only Request
-        1 => 0,
-        // App + Request | Request + params
-        2 => if (meta.Fn.params[0].type == App) return 1 else 0,
-        // App, Request, params (3 Args)
-        else => 1,
-    };
-
-    const argType = meta.Fn.params[indexRequest].type.?;
-
-    const isRequest = Request == argType;
-    if (!isRequest) {
-        if (std.meta.hasFn(argType, "fromRequest") == false) {
-            @compileError("Missing method .fromRequest for: " ++ @typeName(argType));
+        } else {
+            @compileError("Missing type for parameter in function: " ++ @typeName(meta.Fn));
         }
     }
 
-    const fromRequest: ?*const fn (Request) argType = if (isRequest) null else argType.fromRequest;
-
-    // find the arg index from Request
-    const indexParams: ?usize = switch (argsLen) {
-        // only Request
-        1 => null,
-        // App + Request | Request + params
-        2 => if (meta.Fn.params[0].type == App) null else 1,
-        // App, Request, params (3 Args)
-        3 => 2,
-        else => null,
-    };
-
-    const FromParamsType: ?type = if (indexParams) |i|
-        if (meta.Fn.params[i].type == Params) null else meta.Fn.params[i].type
-    else
-        null;
-
     const h = struct {
         fn handle(app: ?App, req: Request, vs: []const Variable) !void {
-            const request = if (fromRequest) |fr| fr(req) else req;
-            const params = if (FromParamsType) |T| try FromVars(T, vs) else Params{ .vars = vs };
+            const Args = std.meta.ArgsTuple(@TypeOf(func));
+            var args: Args = undefined;
 
-            switch (argsLen) {
-                1 => return @call(.auto, func, .{request}),
-                2 => return @call(.auto, func, .{ request, params }),
-                else => return @call(.auto, func, .{ app.?, request, params }),
+            inline for (0..argsLen) |i| {
+                args[i] = switch (kinds[i]) {
+                    .app => app.?,
+                    .request => req,
+                    .p => |p| try FromVars(P(p.typ), vs),
+                    .params => Params{ .vars = vs },
+                    .q => |q| try FromVars(Q(q.typ), vs),
+                    .queries => Queries{ .vars = vs },
+                    .fromRequest => |r| r.typ.fromRequest(req),
+                    .body => @panic("BODY is not implemented yet!"),
+                };
             }
+
+            return @call(.auto, func, args);
         }
     };
 
@@ -273,10 +259,10 @@ test "router for struct params" {
     var router = Router(void, *i32).init(std.testing.allocator);
     defer router.deinit();
 
-    const POk = struct { ok: bool };
+    const Ok = struct { ok: bool };
 
     try router.addPath(.GET, "/foo/:ok", struct {
-        fn get(i: *i32, p: POk) anyerror!void {
+        fn get(i: *i32, p: P(Ok)) anyerror!void {
             i.* += 1;
             try std.testing.expectEqual(true, p.ok);
         }
@@ -303,4 +289,20 @@ test "router for params" {
     router.resolve(.POST, "/foo/42", &i);
 
     try std.testing.expectEqual(4, i);
+}
+
+test "first Params, than request" {
+    var router = Router(void, *i32).init(std.testing.allocator);
+    defer router.deinit();
+
+    try router.get("/foo/:id", struct {
+        fn foo(p: Params, i: *i32) anyerror!void {
+            i.* += (try p.valueAs(i32, "id")).?;
+        }
+    }.foo);
+
+    var i: i32 = 3;
+    router.resolve(.GET, "/foo/42", &i);
+
+    try std.testing.expectEqual(45, i);
 }
