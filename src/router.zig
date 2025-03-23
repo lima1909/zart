@@ -2,96 +2,23 @@ const std = @import("std");
 
 const Variable = @import("vars.zig").Variable;
 const matchitParser = @import("vars.zig").matchitParser;
+const handlerFromFn = @import("request.zig").handlerFromFn;
 
-const Params = @import("request.zig").Params;
-const P = @import("request.zig").P;
-const Queries = @import("request.zig").Queries;
-const Q = @import("request.zig").Q;
-
-const FromVars = @import("request.zig").FromVars;
-const Marker = @import("request.zig").Marker;
-const Kind = @import("request.zig").Kind;
-
-const Tree = @import("tree.zig").Tree;
-
-// Examples for Handler function signatures:
-//   - fn (req: Request)
-//   - fn (req: Request, params: Params)
-//   - fn (app: App, req: Request, params: P(MyParam))
-//   - fn (app: App, req: Request)
-//
-pub fn Handler(comptime App: type, comptime Request: type) type {
+/// Is created by every Request.
+pub fn OnRequest(Request: type) type {
     return struct {
-        handle: *const fn (app: ?App, req: Request, params: []const Variable) anyerror!void,
+        method: std.http.Method,
+        path: []const u8,
+        query: []const Variable = &[_]Variable{},
+
+        // the original Request
+        request: Request,
     };
 }
-
-pub fn handlerFromFn(comptime App: type, comptime Request: type, func: anytype) Handler(App, Request) {
-    const meta = @typeInfo(@TypeOf(func));
-    const argsLen = meta.Fn.params.len;
-    comptime var kinds: [argsLen]Kind = undefined;
-
-    inline for (meta.Fn.params, 0..) |p, i| {
-        if (p.type) |ty| {
-            if (ty == App) {
-                kinds[i] = .app;
-            } else if (ty == Request) {
-                kinds[i] = .request;
-            } else if (ty == Params) {
-                kinds[i] = .params;
-            } else if (ty == Queries) {
-                kinds[i] = .queries;
-            } else if (Marker.asKind(ty)) |k| {
-                kinds[i] = k;
-            } else {
-                kinds[i] = Kind{ .fromRequest = .{ .typ = ty } };
-            }
-        } else {
-            @compileError("Missing type for parameter in function: " ++ @typeName(meta.Fn));
-        }
-    }
-
-    const h = struct {
-        fn handle(app: ?App, req: Request, vs: []const Variable) !void {
-            const Args = std.meta.ArgsTuple(@TypeOf(func));
-            var args: Args = undefined;
-
-            inline for (0..argsLen) |i| {
-                args[i] = switch (kinds[i]) {
-                    .app => app.?,
-                    .request => req,
-                    .p => |p| try FromVars(P(p.typ), vs),
-                    .params => Params{ .vars = vs },
-                    .q => |q| try FromVars(Q(q.typ), vs),
-                    .queries => Queries{ .vars = vs },
-                    .fromRequest => |r| r.typ.fromRequest(req),
-                    .body => @panic("BODY is not implemented yet!"),
-                };
-            }
-
-            return @call(.auto, func, args);
-        }
-    };
-
-    return Handler(App, Request){ .handle = h.handle };
-}
-
-pub const Method = enum {
-    GET,
-    POST,
-    OTHER,
-
-    pub fn fromStdMethod(m: std.http.Method) Method {
-        return switch (m) {
-            .GET => .GET,
-            .POST => .POST,
-            else => .OTHER, // TODO: maybe throw an error or optional?
-        };
-    }
-};
 
 pub fn Router(comptime App: type, comptime Request: type) type {
-    const H = Handler(App, Request);
+    const H = @import("request.zig").Handler(App, Request);
+    const Tree = @import("tree.zig").Tree(H);
 
     return struct {
         const Self = @This();
@@ -99,9 +26,9 @@ pub fn Router(comptime App: type, comptime Request: type) type {
         _app: ?App,
 
         // methods
-        _get: Tree(H),
-        _post: Tree(H),
-        _other: Tree(H),
+        _get: Tree,
+        _post: Tree,
+        _other: Tree,
 
         // error_handler
         // not_found_handler
@@ -118,9 +45,9 @@ pub fn Router(comptime App: type, comptime Request: type) type {
             return .{
                 .allocator = allocator,
                 ._app = app,
-                ._get = Tree(H).init(allocator, cfg),
-                ._post = Tree(H).init(allocator, cfg),
-                ._other = Tree(H).init(allocator, cfg),
+                ._get = Tree.init(allocator, cfg),
+                ._post = Tree.init(allocator, cfg),
+                ._other = Tree.init(allocator, cfg),
             };
         }
 
@@ -138,7 +65,7 @@ pub fn Router(comptime App: type, comptime Request: type) type {
             try self.addPath(.POST, path, handlerFn);
         }
 
-        pub inline fn addPath(self: *Self, method: Method, path: []const u8, handlerFn: anytype) !void {
+        pub inline fn addPath(self: *Self, method: std.http.Method, path: []const u8, handlerFn: anytype) !void {
             const handler = handlerFromFn(App, Request, handlerFn);
             return try switch (method) {
                 .GET => self._get,
@@ -147,15 +74,15 @@ pub fn Router(comptime App: type, comptime Request: type) type {
             }.insert(path, handler);
         }
 
-        pub fn resolve(self: *const Self, method: Method, path: []const u8, req: Request) void {
-            const matched = switch (method) {
+        pub fn resolve(self: *const Self, req: OnRequest(Request)) void {
+            const matched = switch (req.method) {
                 .GET => self._get,
                 .POST => self._post,
                 else => self._other,
-            }.resolve(path);
+            }.resolve(req.path);
 
             if (matched.value) |handler| {
-                handler.handle(self._app, req, &matched.vars) catch |err| {
+                handler.handle(self._app, req.request, req.query, &matched.vars) catch |err| {
                     // TODO: replace this with an error handler
                     std.debug.print("ERROR by call handler: {}\n", .{err});
                 };
@@ -187,10 +114,15 @@ test "router for handler object Body" {
     }.user);
 
     var i: i32 = 3;
-    router.resolve(Method.fromStdMethod(std.http.Method.GET), "/foo", &i);
+    router.resolve(.{ .method = .GET, .path = "/foo", .request = &i });
 
     try std.testing.expectEqual(4, i);
 }
+
+const P = @import("request.zig").P;
+const Q = @import("request.zig").Q;
+const Params = @import("request.zig").Params;
+const Query = @import("request.zig").Query;
 
 test "router for i32" {
     const App = struct { value: i32 };
@@ -199,7 +131,7 @@ test "router for i32" {
     var router = Router(*App, *i32).initWithApp(std.testing.allocator, &app);
     defer router.deinit();
 
-    try router.addPath(.OTHER, "/foo", struct {
+    try router.addPath(.HEAD, "/foo", struct {
         fn addOne(a: *App, i: *i32, _: Params) anyerror!void {
             a.value = i.* + 2;
             i.* += 1;
@@ -207,7 +139,7 @@ test "router for i32" {
     }.addOne);
 
     var i: i32 = 3;
-    router.resolve(.OTHER, "/foo", &i);
+    router.resolve(.{ .method = .OPTIONS, .path = "/foo", .request = &i });
 
     try std.testing.expectEqual(4, i);
     try std.testing.expectEqual(5, app.value);
@@ -249,7 +181,7 @@ test "router std.http.Server.Request" {
         },
     };
 
-    router.resolve(.POST, "/user/42", &req);
+    router.resolve(.{ .method = .POST, .path = "/user/42", .request = &req });
 
     // the user function set keep_alive = true
     try std.testing.expectEqual(true, req.head.keep_alive);
@@ -269,7 +201,7 @@ test "router for struct params" {
     }.get);
 
     var i: i32 = 3;
-    router.resolve(.GET, "/foo/true", &i);
+    router.resolve(.{ .method = .GET, .path = "/foo/true", .request = &i });
 
     try std.testing.expectEqual(4, i);
 }
@@ -286,7 +218,7 @@ test "router for params" {
     }.addOne);
 
     var i: i32 = 3;
-    router.resolve(.POST, "/foo/42", &i);
+    router.resolve(.{ .method = .POST, .path = "/foo/42", .request = &i });
 
     try std.testing.expectEqual(4, i);
 }
@@ -302,7 +234,51 @@ test "first Params, than request" {
     }.foo);
 
     var i: i32 = 3;
-    router.resolve(.GET, "/foo/42", &i);
+    router.resolve(.{ .method = .GET, .path = "/foo/42", .request = &i });
+
+    try std.testing.expectEqual(45, i);
+}
+
+test "with query" {
+    var router = Router(void, *i32).init(std.testing.allocator);
+    defer router.deinit();
+
+    try router.get("/foo", struct {
+        fn foo(q: Query, i: *i32) anyerror!void {
+            i.* += (try q.valueAs(i32, "id")).?;
+        }
+    }.foo);
+
+    var i: i32 = 3;
+    router.resolve(.{
+        .method = .GET,
+        .path = "/foo",
+        .query = &[_]Variable{.{ .key = "id", .value = "42" }},
+        .request = &i,
+    });
+
+    try std.testing.expectEqual(45, i);
+}
+
+test "with Q" {
+    var router = Router(void, *i32).init(std.testing.allocator);
+    defer router.deinit();
+
+    const Id = struct { id: i32 };
+
+    try router.get("/foo", struct {
+        fn foo(q: Q(Id), i: *i32) anyerror!void {
+            i.* += q.id;
+        }
+    }.foo);
+
+    var i: i32 = 3;
+    router.resolve(.{
+        .method = .GET,
+        .path = "/foo",
+        .query = &[_]Variable{.{ .key = "id", .value = "42" }},
+        .request = &i,
+    });
 
     try std.testing.expectEqual(45, i);
 }

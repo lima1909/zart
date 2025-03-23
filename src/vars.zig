@@ -5,42 +5,45 @@ pub const Variable = struct {
     value: []const u8,
 };
 
-pub const Variables = struct {
-    const Self = @This();
+pub fn Variables(Tag: type) type {
+    return struct {
+        const __TAG__: Tag = undefined; // mark the Variables for a specific type
+        const Self = @This();
 
-    vars: []const Variable,
+        vars: []const Variable,
 
-    pub inline fn value(self: *const Self, key: []const u8) ?[]const u8 {
-        for (self.vars) |v| {
-            if (std.mem.eql(u8, key, v.key)) {
-                return v.value;
+        pub inline fn value(self: *const Self, key: []const u8) ?[]const u8 {
+            for (self.vars) |v| {
+                if (std.mem.eql(u8, key, v.key)) {
+                    return v.value;
+                }
             }
+
+            return null;
         }
 
-        return null;
-    }
+        pub inline fn valueAs(self: *const Self, T: type, key: []const u8) !?T {
+            if (self.value(key)) |v| {
+                return switch (@typeInfo(T)) {
+                    .Int => try std.fmt.parseInt(T, v, 10),
+                    .Float => try std.fmt.parseFloat(T, v),
+                    .Bool => {
+                        if (std.mem.eql(u8, v, "true")) {
+                            return true;
+                        } else if (std.mem.eql(u8, v, "false")) {
+                            return false;
+                        }
+                        return error.InvalidBool;
+                    },
+                    .Pointer => |p| if (p.child == u8) v else null,
+                    else => @compileError("not supported type: " ++ @typeName(T) ++ " for key: " ++ key),
+                };
+            }
 
-    pub inline fn valueAs(self: *const Self, T: type, key: []const u8) !?T {
-        if (self.value(key)) |v| {
-            return switch (@typeInfo(T)) {
-                .Int => try std.fmt.parseInt(T, v, 10),
-                .Float => try std.fmt.parseFloat(T, v),
-                .Bool => {
-                    if (std.mem.eql(u8, v, "true")) {
-                        return true;
-                    } else if (std.mem.eql(u8, v, "false")) {
-                        return false;
-                    }
-                    return error.InvalidBool;
-                },
-                .Pointer => |p| if (p.child == u8) v else null,
-                else => @compileError("not supported type: " ++ @typeName(T) ++ " for key: " ++ key),
-            };
+            return null;
         }
-
-        return null;
-    }
-};
+    };
+}
 
 test "variables" {
     const input = [_]Variable{
@@ -49,7 +52,7 @@ test "variables" {
         .{ .key = "afloat", .value = "4.2" },
         .{ .key = "atxt", .value = "foo" },
     };
-    const v = Variables{ .vars = &input };
+    const v = Variables(void){ .vars = &input };
 
     try std.testing.expectEqual(42, (try v.valueAs(i32, "aint")).?);
     try std.testing.expectEqual(4.2, (try v.valueAs(f32, "afloat")).?);
