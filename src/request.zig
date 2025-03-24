@@ -11,7 +11,7 @@ const Kind = union(enum) {
     params,
     q: struct { typ: type }, // fromVars
     query,
-    body,
+    b: struct { typ: type },
     fromRequest: struct { typ: type }, // argType, e.g. Body.fromRequest
 };
 
@@ -23,7 +23,7 @@ const Kind = union(enum) {
 //
 pub fn Handler(comptime App: type, comptime Request: type) type {
     return struct {
-        handle: *const fn (app: ?App, req: Request, query: []const Variable, params: []const Variable) anyerror!void,
+        handle: *const fn (app: ?App, req: Request, body: Body, query: []const Variable, params: []const Variable) anyerror!void,
     };
 }
 
@@ -45,7 +45,7 @@ pub fn handlerFromFn(comptime App: type, comptime Request: type, func: anytype) 
                 const fs = @typeInfo(ty).Struct.fields;
                 inline for (fs) |f| {
                     if (comptime std.mem.eql(u8, f.name, TagFieldName)) {
-                        kinds[i] = f.type.kind();
+                        kinds[i] = f.type.kind(ty);
                     }
                 }
             } else {
@@ -57,7 +57,7 @@ pub fn handlerFromFn(comptime App: type, comptime Request: type, func: anytype) 
     }
 
     const h = struct {
-        fn handle(app: ?App, req: Request, query: []const Variable, params: []const Variable) !void {
+        fn handle(app: ?App, req: Request, body: Body, query: []const Variable, params: []const Variable) !void {
             const Args = std.meta.ArgsTuple(@TypeOf(func));
             var args: Args = undefined;
 
@@ -65,12 +65,12 @@ pub fn handlerFromFn(comptime App: type, comptime Request: type, func: anytype) 
                 args[i] = switch (kinds[i]) {
                     .app => app.?,
                     .request => req,
-                    .p => |p| try FromVars(P(p.typ), params),
+                    .p => |p| try FromVars(p.typ, params),
                     .params => Params{ .vars = params },
-                    .q => |q| try FromVars(Q(q.typ), query),
+                    .q => |q| try FromVars(q.typ, query),
                     .query => Query{ .vars = query },
+                    .b => |by| try body.parse(by.typ),
                     .fromRequest => |r| r.typ.fromRequest(req),
-                    .body => @panic("BODY is not implemented yet!"),
                 };
             }
 
@@ -81,36 +81,42 @@ pub fn handlerFromFn(comptime App: type, comptime Request: type, func: anytype) 
     return Handler(App, Request){ .handle = h.handle };
 }
 
-fn ParamTag(comptime T: type) type {
-    return struct {
-        fn kind() Kind {
-            return Kind{ .p = .{ .typ = T } };
-        }
-    };
-}
+const ParamTag = struct {
+    fn kind(comptime T: type) Kind {
+        return Kind{ .p = .{ .typ = T } };
+    }
+};
 
 /// URL parameter.
-pub const Params = Variables(ParamTag(void));
+pub const Params = Variables(ParamTag);
 
 /// Marker, marked the given Struct as Params
 pub fn P(comptime S: type) type {
-    return structWithTag(S, ParamTag(S));
+    return structWithTag(S, ParamTag);
 }
 
-fn QueryTag(comptime T: type) type {
-    return struct {
-        pub fn kind() Kind {
-            return Kind{ .q = .{ .typ = T } };
-        }
-    };
-}
+const QueryTag = struct {
+    fn kind(comptime T: type) Kind {
+        return Kind{ .q = .{ .typ = T } };
+    }
+};
 
 /// URL query parameter.
-pub const Query = Variables(QueryTag(void));
+pub const Query = Variables(QueryTag);
 
 /// Marker, marked the given Struct as Query
 pub fn Q(comptime S: type) type {
-    return structWithTag(S, QueryTag(S));
+    return structWithTag(S, QueryTag);
+}
+
+const BodyTag = struct {
+    fn kind(comptime T: type) Kind {
+        return Kind{ .b = .{ .typ = T } };
+    }
+};
+
+pub fn B(comptime S: type) type {
+    return structWithTag(S, BodyTag);
 }
 
 const TagFieldName = "__TAG__";
@@ -122,7 +128,7 @@ fn structWithTag(comptime S: type, comptime Tag: type) type {
             .fields = @typeInfo(S).Struct.fields ++ [1]std.builtin.Type.StructField{.{
                 .name = TagFieldName,
                 .type = Tag,
-                .default_value = null,
+                .default_value = &{},
                 .is_comptime = false,
                 .alignment = 0,
             }},
@@ -172,3 +178,39 @@ test "fromVars int and foat field" {
     try std.testing.expectEqual(42, p.inumber);
     try std.testing.expectEqual(2.4, p.fnumber);
 }
+
+pub const Body = union(enum) {
+    none,
+    string: []const u8,
+    reader: std.io.AnyReader,
+
+    fn parse(self: Body, comptime T: type) !T {
+        switch (self) {
+            .string => |s| {
+                const allocator = std.heap.page_allocator;
+
+                const parsed = try std.json.parseFromSlice(T, allocator, s, .{
+                    .ignore_unknown_fields = true,
+                });
+                defer parsed.deinit();
+
+                return parsed.value;
+            },
+            .reader => |r| {
+                const allocator = std.heap.page_allocator;
+
+                var data = std.ArrayList(u8).init(allocator);
+                data.deinit();
+
+                try r.readAllArrayList(&data, 10 * 1024); // Max 10KB
+                const parsed = try std.json.parseFromSlice(T, allocator, data.items, .{});
+                defer parsed.deinit();
+
+                return parsed.value;
+                // var parser = std.json.Parser.init(allocator, false); // `false` = no DOM parsing
+                // defer parser.deinit();
+            },
+            else => @panic("Invalid Body!!!"),
+        }
+    }
+};

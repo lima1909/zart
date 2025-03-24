@@ -3,6 +3,7 @@ const http = @import("std").http;
 
 const OnRequest = @import("router.zig").OnRequest;
 const Variable = @import("vars.zig").Variable;
+const Body = @import("request.zig").Body;
 
 pub fn Server(comptime App: type) type {
     const Router = @import("router.zig").Router(App, http.Server.Request);
@@ -43,20 +44,20 @@ pub fn Server(comptime App: type) type {
             var http_server = std.http.Server.init(conn, &buffer);
             var req = try http_server.receiveHead();
 
-            var vars: [7]Variable = undefined;
-            r.resolve(onRequest(req, &vars));
-
-            // var body_buffer: [4096]u8 = undefined;
+            // var body_buffer: [4]u8 = undefined;
             // const body_len = try (try req.reader()).readAll(&body_buffer);
             // const body = body_buffer[0..body_len];
             //
-            // std.debug.print("Received body: {s}\n", .{body});
+            // std.debug.print("Received body: {s} | {d}\n", .{ body, body_len });
+
+            var vars: [7]Variable = undefined;
+            r.resolve(onRequest(req, try req.reader(), &vars));
 
             // try req.respond("hello world\n", std.http.Server.Request.RespondOptions{});
             try req.respond("", std.http.Server.Request.RespondOptions{ .status = .ok });
         }
 
-        fn onRequest(req: http.Server.Request, vars: []Variable) OnRequest(http.Server.Request) {
+        fn onRequest(req: http.Server.Request, reader: std.io.AnyReader, vars: []Variable) OnRequest(http.Server.Request) {
             const target = req.head.target;
             const index = std.mem.indexOfPos(u8, target, 0, "?");
 
@@ -68,6 +69,7 @@ pub fn Server(comptime App: type) type {
                 .method = req.head.method,
                 .path = path,
                 .query = vars[0..size],
+                .body = Body{ .reader = reader },
                 .request = req,
             };
         }

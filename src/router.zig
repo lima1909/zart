@@ -2,6 +2,7 @@ const std = @import("std");
 
 const Variable = @import("vars.zig").Variable;
 const matchitParser = @import("vars.zig").matchitParser;
+const Body = @import("request.zig").Body;
 const handlerFromFn = @import("request.zig").handlerFromFn;
 
 /// Is created by every Request.
@@ -10,6 +11,7 @@ pub fn OnRequest(Request: type) type {
         method: std.http.Method,
         path: []const u8,
         query: []const Variable = &[_]Variable{},
+        body: Body = .none,
 
         // the original Request
         request: Request,
@@ -82,7 +84,7 @@ pub fn Router(comptime App: type, comptime Request: type) type {
             }.resolve(req.path);
 
             if (matched.value) |handler| {
-                handler.handle(self._app, req.request, req.query, &matched.vars) catch |err| {
+                handler.handle(self._app, req.request, req.body, req.query, &matched.vars) catch |err| {
                     // TODO: replace this with an error handler
                     std.debug.print("ERROR by call handler: {}\n", .{err});
                 };
@@ -93,8 +95,8 @@ pub fn Router(comptime App: type, comptime Request: type) type {
     };
 }
 
-test "router for handler object Body" {
-    const Body = struct {
+test "router for handler object" {
+    const ReqObject = struct {
         const Self = @This();
 
         i: *i32,
@@ -108,7 +110,7 @@ test "router for handler object Body" {
     defer router.deinit();
 
     try router.get("/foo", struct {
-        fn user(u: Body) anyerror!void {
+        fn user(u: ReqObject) anyerror!void {
             u.i.* += 1;
         }
     }.user);
@@ -121,6 +123,7 @@ test "router for handler object Body" {
 
 const P = @import("request.zig").P;
 const Q = @import("request.zig").Q;
+const B = @import("request.zig").B;
 const Params = @import("request.zig").Params;
 const Query = @import("request.zig").Query;
 
@@ -277,6 +280,29 @@ test "with Q" {
         .method = .GET,
         .path = "/foo",
         .query = &[_]Variable{.{ .key = "id", .value = "42" }},
+        .request = &i,
+    });
+
+    try std.testing.expectEqual(45, i);
+}
+
+test "with B" {
+    var router = Router(void, *i32).init(std.testing.allocator);
+    defer router.deinit();
+
+    const Id = struct { id: i32 };
+
+    try router.get("/foo", struct {
+        fn foo(b: B(Id), i: *i32) anyerror!void {
+            i.* += b.id;
+        }
+    }.foo);
+
+    var i: i32 = 3;
+    router.resolve(.{
+        .method = .GET,
+        .path = "/foo",
+        .body = Body{ .string = "{ \"id\" : 42 }" },
         .request = &i,
     });
 
