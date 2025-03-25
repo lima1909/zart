@@ -2,7 +2,7 @@ const std = @import("std");
 const http = @import("std").http;
 
 const OnRequest = @import("router.zig").OnRequest;
-const Variable = @import("vars.zig").Variable;
+const KeyValue = @import("kv.zig").KeyValue;
 const Body = @import("request.zig").Body;
 
 pub fn Server(comptime App: type) type {
@@ -50,14 +50,14 @@ pub fn Server(comptime App: type) type {
             //
             // std.debug.print("Received body: {s} | {d}\n", .{ body, body_len });
 
-            var vars: [7]Variable = undefined;
+            var vars: [7]KeyValue = undefined;
             r.resolve(onRequest(req, try req.reader(), &vars));
 
             // try req.respond("hello world\n", std.http.Server.Request.RespondOptions{});
             try req.respond("", std.http.Server.Request.RespondOptions{ .status = .ok });
         }
 
-        fn onRequest(req: http.Server.Request, reader: std.io.AnyReader, vars: []Variable) OnRequest(http.Server.Request) {
+        fn onRequest(req: http.Server.Request, reader: std.io.AnyReader, vars: []KeyValue) OnRequest(http.Server.Request) {
             const target = req.head.target;
             const index = std.mem.indexOfPos(u8, target, 0, "?");
 
@@ -80,7 +80,7 @@ pub fn Server(comptime App: type) type {
 // const queryString = try allocator.dupe(u8, input);
 // defer allocator.free(queryString);
 // const q = std.Uri.percentDecodeInPlace(queryString);
-pub fn parseQueryString(input: []const u8, query: []Variable) usize {
+pub fn parseQueryString(input: []const u8, query: []KeyValue) usize {
     if (input.len == 0) {
         return 0;
     }
@@ -90,7 +90,7 @@ pub fn parseQueryString(input: []const u8, query: []Variable) usize {
     var iter = std.mem.splitScalar(u8, input, '&');
     while (iter.next()) |pair| {
         if (std.mem.indexOfScalarPos(u8, pair, 0, '=')) |sep| {
-            const v = Variable{ .key = pair[0..sep], .value = pair[sep + 1 ..] };
+            const v = KeyValue{ .key = pair[0..sep], .value = pair[sep + 1 ..] };
             query[size] = v;
             size += 1;
         }
@@ -100,7 +100,7 @@ pub fn parseQueryString(input: []const u8, query: []Variable) usize {
 }
 
 test "parse query string" {
-    var query: [7]Variable = undefined;
+    var query: [7]KeyValue = undefined;
 
     try std.testing.expectEqual(0, parseQueryString("", &query));
 

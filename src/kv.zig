@@ -1,16 +1,16 @@
 const std = @import("std");
 
-pub const Variable = struct {
+pub const KeyValue = struct {
     key: []const u8,
     value: []const u8,
 };
 
-pub fn Variables(Tag: type) type {
+pub fn KeyValues(Tag: type) type {
     return struct {
-        const __TAG__: Tag = undefined; // mark the Variables for a specific type
+        const __TAG__: Tag = undefined; // mark the key-values for a specific type
         const Self = @This();
 
-        vars: []const Variable,
+        vars: []const KeyValue,
 
         pub inline fn value(self: *const Self, key: []const u8) ?[]const u8 {
             for (self.vars) |v| {
@@ -45,14 +45,14 @@ pub fn Variables(Tag: type) type {
     };
 }
 
-test "variables" {
-    const input = [_]Variable{
+test "key-values" {
+    const input = [_]KeyValue{
         .{ .key = "aint", .value = "42" },
         .{ .key = "abool", .value = "true" },
         .{ .key = "afloat", .value = "4.2" },
         .{ .key = "atxt", .value = "foo" },
     };
-    const v = Variables(void){ .vars = &input };
+    const v = KeyValues(void){ .vars = &input };
 
     try std.testing.expectEqual(42, (try v.valueAs(i32, "aint")).?);
     try std.testing.expectEqual(4.2, (try v.valueAs(f32, "afloat")).?);
@@ -64,7 +64,7 @@ test "variables" {
 }
 
 // Parse is the interface for using different implementation of parsing an given 'path'
-// and return the result 'Parsed' and a match function, for resolving the parsed variable.
+// and return the result 'Parsed' and a match function, for resolving the parsed key-values.
 pub const parse = *const fn (path: []const u8) ParseError!?Parsed;
 
 pub const ParseError = error{
@@ -74,15 +74,15 @@ pub const ParseError = error{
 };
 
 pub const Parsed = struct {
-    variable: []const u8,
+    kv: []const u8,
     isWildcard: bool = false,
     start: usize,
     end: usize,
 
-    _matchFn: *const fn (path: []const u8, variable: []const u8, isWildcard: bool) Variable,
+    _matchFn: *const fn (path: []const u8, kv: []const u8, isWildcard: bool) KeyValue,
 
-    pub fn match(self: *const @This(), path: []const u8) Variable {
-        return self._matchFn(path, self.variable, self.isWildcard);
+    pub fn match(self: *const @This(), path: []const u8) KeyValue {
+        return self._matchFn(path, self.kv, self.isWildcard);
     }
 };
 
@@ -129,7 +129,7 @@ pub fn matchitParser(current_path: []const u8) ParseError!?Parsed {
                 until = if (until == 0) path.len else until;
 
                 return .{
-                    .variable = path[afterStart..until],
+                    .kv = path[afterStart..until],
                     .start = start,
                     .end = until,
                     .isWildcard = isWildcard,
@@ -137,20 +137,20 @@ pub fn matchitParser(current_path: []const u8) ParseError!?Parsed {
                 };
             }
 
-            // contains no variable
+            // contains no key-value
             return null;
         }
 
-        pub fn match(path: []const u8, variable: []const u8, isWildcard: bool) Variable {
+        pub fn match(path: []const u8, key: []const u8, isWildcard: bool) KeyValue {
             if (isWildcard) {
-                return .{ .key = variable, .value = path };
+                return .{ .key = key, .value = path };
             }
 
             var end: usize = 0;
             while (end < path.len and path[end] != '/') {
                 end += 1;
             }
-            return .{ .key = variable, .value = path[0..end] };
+            return .{ .key = key, .value = path[0..end] };
         }
     };
 
@@ -162,36 +162,36 @@ const t = std.testing;
 test "matchit no prefix" {
     const m = (try matchitParser(":id")).?;
 
-    try t.expectEqualDeep(Variable{ .key = "id", .value = "" }, m.match(""));
-    try t.expectEqualDeep(Variable{ .key = "id", .value = "foo" }, m.match("foo"));
-    try t.expectEqualDeep(Variable{ .key = "id", .value = "42" }, m.match("42/foo"));
+    try t.expectEqualDeep(KeyValue{ .key = "id", .value = "" }, m.match(""));
+    try t.expectEqualDeep(KeyValue{ .key = "id", .value = "foo" }, m.match("foo"));
+    try t.expectEqualDeep(KeyValue{ .key = "id", .value = "42" }, m.match("42/foo"));
 }
 
 test "matchit no prefix with wildcard" {
     const m = (try matchitParser("*id")).?;
 
-    try t.expectEqualDeep(Variable{ .key = "id", .value = "" }, m.match(""));
-    try t.expectEqualDeep(Variable{ .key = "id", .value = "foo" }, m.match("foo"));
-    try t.expectEqualDeep(Variable{ .key = "id", .value = "42/foo" }, m.match("42/foo"));
+    try t.expectEqualDeep(KeyValue{ .key = "id", .value = "" }, m.match(""));
+    try t.expectEqualDeep(KeyValue{ .key = "id", .value = "foo" }, m.match("foo"));
+    try t.expectEqualDeep(KeyValue{ .key = "id", .value = "42/foo" }, m.match("42/foo"));
 }
 
 test "mathit with prefix" {
     const m = (try matchitParser("mi:id")).?;
 
-    try t.expectEqualDeep(Variable{ .key = "id", .value = "" }, m.match(""));
-    try t.expectEqualDeep(Variable{ .key = "id", .value = "foo" }, m.match("foo"));
-    try t.expectEqualDeep(Variable{ .key = "id", .value = "42" }, m.match("42/foo"));
+    try t.expectEqualDeep(KeyValue{ .key = "id", .value = "" }, m.match(""));
+    try t.expectEqualDeep(KeyValue{ .key = "id", .value = "foo" }, m.match("foo"));
+    try t.expectEqualDeep(KeyValue{ .key = "id", .value = "42" }, m.match("42/foo"));
 }
 
 test "mathit with prefix with wildcard" {
     const m = (try matchitParser("mi*id")).?;
 
-    try t.expectEqualDeep(Variable{ .key = "id", .value = "" }, m.match(""));
-    try t.expectEqualDeep(Variable{ .key = "id", .value = "foo" }, m.match("foo"));
-    try t.expectEqualDeep(Variable{ .key = "id", .value = "42/foo" }, m.match("42/foo"));
+    try t.expectEqualDeep(KeyValue{ .key = "id", .value = "" }, m.match(""));
+    try t.expectEqualDeep(KeyValue{ .key = "id", .value = "foo" }, m.match("foo"));
+    try t.expectEqualDeep(KeyValue{ .key = "id", .value = "42/foo" }, m.match("42/foo"));
 }
 
-test "matchit empty variable" {
+test "matchit empty key-value" {
     try t.expectError(ParseError.EmptyVariable, matchitParser(":"));
     try t.expectError(ParseError.EmptyVariable, matchitParser("xy:"));
     try t.expectError(ParseError.EmptyVariable, matchitParser(":/xy"));
@@ -217,63 +217,63 @@ test "error with WildcardContainsSlash" {
     try t.expectError(ParseError.WildcardContainsSlash, matchitParser("a*a/"));
 }
 
-test "matchit only variable" {
+test "matchit only key-value" {
     const m = (try matchitParser(":abc")).?;
 
-    try t.expectEqualStrings("abc", m.variable);
+    try t.expectEqualStrings("abc", m.kv);
     try t.expectEqual(0, m.start);
     try t.expectEqual(4, m.end);
     try t.expectEqual(false, m.isWildcard);
 }
 
-test "matchit only variable with wildcard" {
+test "matchit only key-value with wildcard" {
     const m = (try matchitParser("*abc")).?;
 
-    try t.expectEqualStrings("abc", m.variable);
+    try t.expectEqualStrings("abc", m.kv);
     try t.expectEqual(0, m.start);
     try t.expectEqual(4, m.end);
     try t.expectEqual(true, m.isWildcard);
 }
 
-test "matchit variable with prefix" {
+test "matchit key-value with prefix" {
     const m = (try matchitParser("xy:abc")).?;
 
-    try t.expectEqualStrings("abc", m.variable);
+    try t.expectEqualStrings("abc", m.kv);
     try t.expectEqual(2, m.start);
     try t.expectEqual(6, m.end);
     try t.expectEqual(false, m.isWildcard);
 }
 
-test "matchit variable with suffix" {
+test "matchit key-value with suffix" {
     const m = (try matchitParser(":abc/xy")).?;
 
-    try t.expectEqualStrings("abc", m.variable);
+    try t.expectEqualStrings("abc", m.kv);
     try t.expectEqual(0, m.start);
     try t.expectEqual(4, m.end);
     try t.expectEqual(false, m.isWildcard);
 }
 
-test "matchit variable with prefix and suffix" {
+test "matchit key-value with prefix and suffix" {
     const m = (try matchitParser("ml*abcxy")).?;
 
-    try t.expectEqualStrings("abcxy", m.variable);
+    try t.expectEqualStrings("abcxy", m.kv);
     try t.expectEqual(2, m.start);
     try t.expectEqual(8, m.end);
     try t.expectEqual(true, m.isWildcard);
 }
 
-test "resolve variable" {
+test "resolve key-value" {
     const m = (try matchitParser("ml:id")).?;
 
-    try t.expectEqualDeep(Variable{ .key = "id", .value = "" }, m.match(""));
-    try t.expectEqualDeep(Variable{ .key = "id", .value = "foo" }, m.match("foo"));
-    try t.expectEqualDeep(Variable{ .key = "id", .value = "42" }, m.match("42/foo"));
+    try t.expectEqualDeep(KeyValue{ .key = "id", .value = "" }, m.match(""));
+    try t.expectEqualDeep(KeyValue{ .key = "id", .value = "foo" }, m.match("foo"));
+    try t.expectEqualDeep(KeyValue{ .key = "id", .value = "42" }, m.match("42/foo"));
 }
 
-test "resolve variable with wildcard" {
+test "resolve key-value with wildcard" {
     const m = (try matchitParser("ml*id")).?;
 
-    try t.expectEqualDeep(Variable{ .key = "id", .value = "" }, m.match(""));
-    try t.expectEqualDeep(Variable{ .key = "id", .value = "foo" }, m.match("foo"));
-    try t.expectEqualDeep(Variable{ .key = "id", .value = "42/foo" }, m.match("42/foo"));
+    try t.expectEqualDeep(KeyValue{ .key = "id", .value = "" }, m.match(""));
+    try t.expectEqualDeep(KeyValue{ .key = "id", .value = "foo" }, m.match("foo"));
+    try t.expectEqualDeep(KeyValue{ .key = "id", .value = "42/foo" }, m.match("42/foo"));
 }

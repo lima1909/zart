@@ -1,12 +1,12 @@
+pub const vars = @import("./kv.zig");
 pub const tree = @import("./tree.zig");
-pub const vars = @import("./vars.zig");
 
 test {
+    _ = @import("./kv.zig");
     _ = @import("./node.zig");
-    _ = @import("./router.zig");
     _ = @import("./request.zig");
+    _ = @import("./router.zig");
     _ = @import("./tree.zig");
-    _ = @import("./vars.zig");
 }
 
 // - find first wildcard = parsePath() -> (prefix, suffix, KEY) OR None OR Error

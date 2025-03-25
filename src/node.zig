@@ -1,5 +1,5 @@
 const std = @import("std");
-const vars = @import("vars.zig");
+const kv = @import("kv.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -12,8 +12,8 @@ pub fn Node(comptime V: type) type {
         children: std.ArrayList(*Self),
         allocator: Allocator,
 
-        // handle variables
-        matcher: ?vars.Parsed = null,
+        // handle key-values
+        matcher: ?kv.Parsed = null,
 
         pub fn init(allocator: Allocator, key: []const u8, value: ?V) !*Self {
             const node = try allocator.create(Self);
@@ -98,9 +98,9 @@ pub fn Node(comptime V: type) type {
     };
 }
 
-// parse the given path, if the path contains variable,
+// parse the given path, if the path contains key-values,
 // then returns the root Node from the path, otherwise null
-pub inline fn parsePath(comptime V: type, allocator: Allocator, p: ?vars.parse, path: []const u8, value: V) !?*Node(V) {
+pub inline fn parsePath(comptime V: type, allocator: Allocator, p: ?kv.parse, path: []const u8, value: V) !?*Node(V) {
     if (p == null) {
         return null;
     }
@@ -228,9 +228,9 @@ test "split current node, overlapping" {
     try std.testing.expectEqual(0, child.children.items.len);
 }
 
-test "parsePath: variable is in the beginning and only" {
+test "parsePath: key-values is in the beginning and only" {
     const alloc = std.testing.allocator;
-    const node = (try parsePath(i32, alloc, vars.matchitParser, ":id", 1)).?;
+    const node = (try parsePath(i32, alloc, kv.matchitParser, ":id", 1)).?;
     defer node.deinit();
 
     try std.testing.expectEqualStrings(":id", node.key);
@@ -238,12 +238,12 @@ test "parsePath: variable is in the beginning and only" {
     try std.testing.expectEqual(0, node.children.items.len);
     try std.testing.expect(null != node.matcher);
 
-    try std.testing.expectEqualDeep(vars.Variable{ .key = "id", .value = "42" }, node.matcher.?.match("42"));
+    try std.testing.expectEqualDeep(kv.KeyValue{ .key = "id", .value = "42" }, node.matcher.?.match("42"));
 }
 
-test "parsePath: variable with prefix" {
+test "parsePath: key-values with prefix" {
     const alloc = std.testing.allocator;
-    const node = (try parsePath(i32, alloc, vars.matchitParser, "/user/:id", 1)).?;
+    const node = (try parsePath(i32, alloc, kv.matchitParser, "/user/:id", 1)).?;
     defer node.deinit();
 
     try std.testing.expectEqualStrings("/user/", node.key);
@@ -257,12 +257,12 @@ test "parsePath: variable with prefix" {
     try std.testing.expect(null != child.matcher);
     try std.testing.expectEqual(false, child.matcher.?.isWildcard);
 
-    try std.testing.expectEqualDeep(vars.Variable{ .key = "id", .value = "42" }, child.matcher.?.match("42/name"));
+    try std.testing.expectEqualDeep(kv.KeyValue{ .key = "id", .value = "42" }, child.matcher.?.match("42/name"));
 }
 
-test "parsePath: variable with suffix" {
+test "parsePath: key-values with suffix" {
     const alloc = std.testing.allocator;
-    const node = (try parsePath(i32, alloc, vars.matchitParser, ":id/user/", 1)).?;
+    const node = (try parsePath(i32, alloc, kv.matchitParser, ":id/user/", 1)).?;
     defer node.deinit();
 
     try std.testing.expectEqualStrings(":id", node.key);
@@ -277,12 +277,12 @@ test "parsePath: variable with suffix" {
     try std.testing.expect(null == user.matcher);
     try std.testing.expectEqual(0, user.children.items.len);
 
-    try std.testing.expectEqualDeep(vars.Variable{ .key = "id", .value = "42" }, node.matcher.?.match("42/name"));
+    try std.testing.expectEqualDeep(kv.KeyValue{ .key = "id", .value = "42" }, node.matcher.?.match("42/name"));
 }
 
-test "parsePath: variable in between" {
+test "parsePath: key-values in between" {
     const alloc = std.testing.allocator;
-    const node = (try parsePath(i32, alloc, vars.matchitParser, "/user/:id/name", 1)).?;
+    const node = (try parsePath(i32, alloc, kv.matchitParser, "/user/:id/name", 1)).?;
     defer node.deinit();
 
     try std.testing.expectEqualStrings("/user/", node.key);
@@ -303,12 +303,12 @@ test "parsePath: variable in between" {
     try std.testing.expectEqual(null, name.matcher);
     try std.testing.expectEqual(0, name.children.items.len);
 
-    try std.testing.expectEqualDeep(vars.Variable{ .key = "id", .value = "42" }, id.matcher.?.match("42/name"));
+    try std.testing.expectEqualDeep(kv.KeyValue{ .key = "id", .value = "42" }, id.matcher.?.match("42/name"));
 }
 
-test "parsePath: split into variable Nodes with two variables" {
+test "parsePath: split into key-values Nodes with two key-values" {
     const alloc = std.testing.allocator;
-    const node = (try parsePath(i32, alloc, vars.matchitParser, "/user/:id/name/:name", 1)).?;
+    const node = (try parsePath(i32, alloc, kv.matchitParser, "/user/:id/name/:name", 1)).?;
     defer node.deinit();
 
     try std.testing.expectEqualStrings("/user/", node.key);
@@ -323,7 +323,7 @@ test "parsePath: split into variable Nodes with two variables" {
     try std.testing.expectEqual(false, id.matcher.?.isWildcard);
     try std.testing.expectEqual(1, id.children.items.len);
 
-    try std.testing.expectEqualDeep(vars.Variable{ .key = "id", .value = "42" }, id.matcher.?.match("42/name"));
+    try std.testing.expectEqualDeep(kv.KeyValue{ .key = "id", .value = "42" }, id.matcher.?.match("42/name"));
 
     const child = id.children.items[0];
     try std.testing.expectEqualStrings("/name/", child.key);
@@ -338,5 +338,5 @@ test "parsePath: split into variable Nodes with two variables" {
     try std.testing.expect(null != name.matcher);
     try std.testing.expectEqual(false, name.matcher.?.isWildcard);
 
-    try std.testing.expectEqualDeep(vars.Variable{ .key = "name", .value = "me" }, name.matcher.?.match("me"));
+    try std.testing.expectEqualDeep(kv.KeyValue{ .key = "name", .value = "me" }, name.matcher.?.match("me"));
 }

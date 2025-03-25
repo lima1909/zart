@@ -1,7 +1,7 @@
 const std = @import("std");
 
-const Variable = @import("vars.zig").Variable;
-const matchitParser = @import("vars.zig").matchitParser;
+const KeyValue = @import("kv.zig").KeyValue;
+const matchitParser = @import("kv.zig").matchitParser;
 const Body = @import("request.zig").Body;
 const handlerFromFn = @import("request.zig").handlerFromFn;
 
@@ -10,7 +10,7 @@ pub fn OnRequest(Request: type) type {
     return struct {
         method: std.http.Method,
         path: []const u8,
-        query: []const Variable = &[_]Variable{},
+        query: []const KeyValue = &[_]KeyValue{},
         body: Body = .none,
 
         // the original Request
@@ -84,7 +84,7 @@ pub fn Router(comptime App: type, comptime Request: type) type {
             }.resolve(req.path);
 
             if (matched.value) |handler| {
-                handler.handle(self._app, req.request, req.body, req.query, &matched.vars) catch |err| {
+                handler.handle(self._app, req.request, req.body, req.query, &matched.kvs) catch |err| {
                     // TODO: replace this with an error handler
                     std.debug.print("ERROR by call handler: {}\n", .{err});
                 };
@@ -256,7 +256,7 @@ test "with query" {
     router.resolve(.{
         .method = .GET,
         .path = "/foo",
-        .query = &[_]Variable{.{ .key = "id", .value = "42" }},
+        .query = &[_]KeyValue{.{ .key = "id", .value = "42" }},
         .request = &i,
     });
 
@@ -279,7 +279,7 @@ test "with Q" {
     router.resolve(.{
         .method = .GET,
         .path = "/foo",
-        .query = &[_]Variable{.{ .key = "id", .value = "42" }},
+        .query = &[_]KeyValue{.{ .key = "id", .value = "42" }},
         .request = &i,
     });
 

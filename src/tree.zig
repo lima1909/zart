@@ -23,14 +23,14 @@
 //
 const std = @import("std");
 
-const vars = @import("vars.zig");
+const kv = @import("kv.zig");
 const Node = @import("node.zig").Node;
 const parsePath = @import("node.zig").parsePath;
 
 const Allocator = std.mem.Allocator;
 
 pub const Config = struct {
-    parser: ?vars.parse = null,
+    parser: ?kv.parse = null,
 };
 
 pub fn Tree(comptime V: type) type {
@@ -38,7 +38,7 @@ pub fn Tree(comptime V: type) type {
         const Self = @This();
 
         root: ?*Node(V) = null,
-        parser: ?vars.parse = null,
+        parser: ?kv.parse = null,
         allocator: Allocator,
 
         pub fn init(allocator: Allocator, cfg: Config) Self {
@@ -55,7 +55,7 @@ pub fn Tree(comptime V: type) type {
 
             // first step, root doesn't exist -> create root node
             if (self.root == null) {
-                // if an parser is set, then parse the given key, if he contains variables
+                // if an parser is set, then parse the given key, if he contains key-values
                 self.root = if (try parsePath(V, self.allocator, self.parser, key, value)) |node|
                     node
                 else
@@ -117,8 +117,8 @@ pub fn Tree(comptime V: type) type {
             }
         }
 
-        /// Resolve the given path for finding the value and collect potential variables.
-        /// Hint: the are only 3 variables per path possible!
+        /// Resolve the given path for finding the value and collect potential key-values.
+        /// Hint: the are only 3 key-values per path possible!
         pub fn resolve(self: *const Self, path: []const u8) Matched(V) {
             var matched = Matched(V){};
 
@@ -134,7 +134,7 @@ pub fn Tree(comptime V: type) type {
                 // the match is on the current node, e.g. root-node
                 if (current.matcher) |matcher| {
                     const vr = matcher.match(remains);
-                    matched.addVariable(vr);
+                    matched.addKeyValue(vr);
                     remains = remains[vr.value.len..];
                     if (remains.len == 0) {
                         matched.value = current.value;
@@ -159,14 +159,14 @@ pub fn Tree(comptime V: type) type {
                 else if (remains.len > current.key.len) {
                     remains = remains[current.key.len..];
 
-                    // check, there are possible variables
+                    // check, there are possible key-values
                     if (self.parser != null) {
-                        // has the child-node a variable?
+                        // has the child-node a key-values?
                         if (current.children.items.len > 0) {
                             const child = current.children.items[0];
                             if (child.matcher != null) {
                                 const vr = child.matcher.?.match(remains);
-                                matched.addVariable(vr);
+                                matched.addKeyValue(vr);
                                 remains = remains[vr.value.len..];
                                 if (remains.len == 0) {
                                     matched.value = child.value;
@@ -181,7 +181,7 @@ pub fn Tree(comptime V: type) type {
                         }
                     }
 
-                    // there are no variables
+                    // there are no key-values
                     if (current.edge(remains[0])) |child| {
                         current = child;
                         continue :traverse;
@@ -236,12 +236,12 @@ pub fn Matched(comptime V: type) type {
         const Self = @This();
 
         value: ?V = null,
-        // only support for 3 variables!!!
-        vars: [3]vars.Variable = undefined,
+        // only support for 3 key-values!!!
+        kvs: [3]kv.KeyValue = undefined,
         idx: u8 = 0,
 
-        pub inline fn addVariable(self: *Self, v: vars.Variable) void {
-            self.vars[self.idx] = v;
+        pub inline fn addKeyValue(self: *Self, v: kv.KeyValue) void {
+            self.kvs[self.idx] = v;
             self.idx += 1;
         }
 
@@ -250,7 +250,7 @@ pub fn Matched(comptime V: type) type {
                 return null;
             }
 
-            for (self.vars) |v| {
+            for (self.kvs) |v| {
                 if (std.mem.eql(u8, v.key, key)) {
                     return v.value;
                 }
@@ -262,7 +262,7 @@ pub fn Matched(comptime V: type) type {
 }
 
 test "only root param" {
-    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
+    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = kv.matchitParser });
     defer tree.deinit();
 
     try tree.insert(":name", 96);
@@ -280,7 +280,7 @@ test "only root param" {
 }
 
 test "root param starts with slash" {
-    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
+    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = kv.matchitParser });
     defer tree.deinit();
 
     try tree.insert("/:name", 99);
@@ -301,7 +301,7 @@ test "root param starts with slash" {
 }
 
 test "root param with prefix" {
-    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
+    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = kv.matchitParser });
     defer tree.deinit();
 
     try tree.insert("/user/:id", 1);
@@ -322,7 +322,7 @@ test "root param with prefix" {
 }
 
 test "root paramn with suffix" {
-    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
+    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = kv.matchitParser });
     defer tree.deinit();
 
     try tree.insert(":id/user/", 1);
@@ -345,7 +345,7 @@ test "root paramn with suffix" {
 }
 
 test "root paramn in between" {
-    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
+    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = kv.matchitParser });
     defer tree.deinit();
 
     try tree.insert("/prefix/:id/user/", 1);
@@ -374,7 +374,7 @@ test "root paramn in between" {
 }
 
 test "root with two params" {
-    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
+    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = kv.matchitParser });
     defer tree.deinit();
 
     try tree.insert("/user/:id/:name", 1);
@@ -408,7 +408,7 @@ test "root with two params" {
 }
 
 test "params: only root with two params and one node between" {
-    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
+    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = kv.matchitParser });
     defer tree.deinit();
 
     try tree.insert("/user/:id/with/:name", 77);
@@ -420,7 +420,7 @@ test "params: only root with two params and one node between" {
 }
 
 test "params: root with child" {
-    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
+    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = kv.matchitParser });
     defer tree.deinit();
 
     try tree.insert("/user/:id", 2);
@@ -447,7 +447,7 @@ test "params: root with child" {
 }
 
 test "params: root with two child" {
-    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
+    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = kv.matchitParser });
     defer tree.deinit();
 
     try tree.insert("/user/", 1);
@@ -732,7 +732,7 @@ test "aappzz + aa + aappxx ==> aa -> pp -> xx & zz" {
 }
 
 test "complex router" {
-    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = vars.matchitParser });
+    var tree = Tree(i32).init(std.testing.allocator, .{ .parser = kv.matchitParser });
     defer tree.deinit();
 
     try tree.insert("/", 0);
@@ -758,19 +758,19 @@ test "complex router" {
     try std.testing.expectEqual(0, tree.resolve("/").value);
     try std.testing.expectEqualDeep(Matched(i32){
         .value = 1,
-        .vars = [3]vars.Variable{ .{ .key = "tool", .value = "zig" }, .{ .key = "sub", .value = "build" }, undefined },
+        .kvs = [3]kv.KeyValue{ .{ .key = "tool", .value = "zig" }, .{ .key = "sub", .value = "build" }, undefined },
         .idx = 2,
     }, tree.resolve("/cmd/zig/build"));
     try std.testing.expectEqualDeep(Matched(i32){
         .value = 2,
-        .vars = [3]vars.Variable{ .{ .key = "tool", .value = "zig" }, undefined, undefined },
+        .kvs = [3]kv.KeyValue{ .{ .key = "tool", .value = "zig" }, undefined, undefined },
         .idx = 1,
     }, tree.resolve("/cmd/zig/"));
 
     //
     try std.testing.expectEqualDeep(Matched(i32){
         .value = 3,
-        .vars = [3]vars.Variable{ .{ .key = "filepath", .value = "in/src/my.zig" }, undefined, undefined },
+        .kvs = [3]kv.KeyValue{ .{ .key = "filepath", .value = "in/src/my.zig" }, undefined, undefined },
         .idx = 1,
     }, tree.resolve("/src/in/src/my.zig"));
     try std.testing.expectEqual(4, tree.resolve("/search/").value);
@@ -779,17 +779,17 @@ test "complex router" {
     //
     try std.testing.expectEqualDeep(Matched(i32){
         .value = 6,
-        .vars = [3]vars.Variable{ .{ .key = "name", .value = "egon" }, undefined, undefined },
+        .kvs = [3]kv.KeyValue{ .{ .key = "name", .value = "egon" }, undefined, undefined },
         .idx = 1,
     }, tree.resolve("/user_egon"));
     try std.testing.expectEqualDeep(Matched(i32){
         .value = 7,
-        .vars = [3]vars.Variable{ .{ .key = "name", .value = "jasmin" }, undefined, undefined },
+        .kvs = [3]kv.KeyValue{ .{ .key = "name", .value = "jasmin" }, undefined, undefined },
         .idx = 1,
     }, tree.resolve("/user_jasmin/about"));
     try std.testing.expectEqualDeep(Matched(i32){
         .value = 8,
-        .vars = [3]vars.Variable{ .{ .key = "dir", .value = "cwd" }, .{ .key = "filepath", .value = "zig/build/my.zig" }, undefined },
+        .kvs = [3]kv.KeyValue{ .{ .key = "dir", .value = "cwd" }, .{ .key = "filepath", .value = "zig/build/my.zig" }, undefined },
         .idx = 2,
     }, tree.resolve("/files/cwd/zig/build/my.zig"));
 
@@ -801,13 +801,13 @@ test "complex router" {
     //
     try std.testing.expectEqualDeep(Matched(i32){
         .value = 12,
-        .vars = [3]vars.Variable{ .{ .key = "user", .value = "me" }, undefined, undefined },
+        .kvs = [3]kv.KeyValue{ .{ .key = "user", .value = "me" }, undefined, undefined },
         .idx = 1,
     }, tree.resolve("/info/me/public"));
 
     try std.testing.expectEqualDeep(Matched(i32){
         .value = 13,
-        .vars = [3]vars.Variable{ .{ .key = "user", .value = "me" }, .{ .key = "project", .value = "zart" }, undefined },
+        .kvs = [3]kv.KeyValue{ .{ .key = "user", .value = "me" }, .{ .key = "project", .value = "zart" }, undefined },
         .idx = 2,
     }, tree.resolve("/info/me/project/zart"));
 }

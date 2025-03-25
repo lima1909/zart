@@ -1,7 +1,7 @@
 const std = @import("std");
 
-const Variable = @import("vars.zig").Variable;
-const Variables = @import("vars.zig").Variables;
+const KeyValue = @import("kv.zig").KeyValue;
+const KeyValues = @import("kv.zig").KeyValues;
 
 /// Kinds of handler Args (parts of an request)
 const Kind = union(enum) {
@@ -23,7 +23,7 @@ const Kind = union(enum) {
 //
 pub fn Handler(comptime App: type, comptime Request: type) type {
     return struct {
-        handle: *const fn (app: ?App, req: Request, body: Body, query: []const Variable, params: []const Variable) anyerror!void,
+        handle: *const fn (app: ?App, req: Request, body: Body, query: []const KeyValue, params: []const KeyValue) anyerror!void,
     };
 }
 
@@ -57,7 +57,7 @@ pub fn handlerFromFn(comptime App: type, comptime Request: type, func: anytype) 
     }
 
     const h = struct {
-        fn handle(app: ?App, req: Request, body: Body, query: []const Variable, params: []const Variable) !void {
+        fn handle(app: ?App, req: Request, body: Body, query: []const KeyValue, params: []const KeyValue) !void {
             const Args = std.meta.ArgsTuple(@TypeOf(func));
             var args: Args = undefined;
 
@@ -69,7 +69,7 @@ pub fn handlerFromFn(comptime App: type, comptime Request: type, func: anytype) 
                     .params => Params{ .vars = params },
                     .q => |q| try FromVars(q.typ, query),
                     .query => Query{ .vars = query },
-                    .b => |by| try body.parse(by.typ),
+                    .b => |b| try body.parse(b.typ),
                     .fromRequest => |r| r.typ.fromRequest(req),
                 };
             }
@@ -88,7 +88,7 @@ const ParamTag = struct {
 };
 
 /// URL parameter.
-pub const Params = Variables(ParamTag);
+pub const Params = KeyValues(ParamTag);
 
 /// Marker, marked the given Struct as Params
 pub fn P(comptime S: type) type {
@@ -102,7 +102,7 @@ const QueryTag = struct {
 };
 
 /// URL query parameter.
-pub const Query = Variables(QueryTag);
+pub const Query = KeyValues(QueryTag);
 
 /// Marker, marked the given Struct as Query
 pub fn Q(comptime S: type) type {
@@ -138,10 +138,10 @@ fn structWithTag(comptime S: type, comptime Tag: type) type {
     });
 }
 
-/// Create an instance of an given Struct from the given Variables.
-fn FromVars(comptime S: type, vars: []const Variable) !S {
+/// Create an instance of an given Struct from the given key-values.
+fn FromVars(comptime S: type, vars: []const KeyValue) !S {
     var instance: S = undefined;
-    const vs = Variables(void){ .vars = vars };
+    const vs = KeyValues(void){ .vars = vars };
 
     const info = @typeInfo(S);
     if (info == .Struct) {
@@ -159,21 +159,21 @@ fn FromVars(comptime S: type, vars: []const Variable) !S {
 
 test "fromVars string field" {
     const X = struct { name: []const u8 };
-    const p = try FromVars(X, &[_]Variable{.{ .key = "name", .value = "Mario" }});
+    const p = try FromVars(X, &[_]KeyValue{.{ .key = "name", .value = "Mario" }});
 
     try std.testing.expectEqualStrings("Mario", p.name);
 }
 
 test "fromVars bool field" {
     const X = struct { maybe: bool };
-    const p = try FromVars(X, &[_]Variable{.{ .key = "maybe", .value = "true" }});
+    const p = try FromVars(X, &[_]KeyValue{.{ .key = "maybe", .value = "true" }});
 
     try std.testing.expectEqual(true, p.maybe);
 }
 
 test "fromVars int and foat field" {
     const X = struct { inumber: i32, fnumber: f32 };
-    const p = try FromVars(X, &[_]Variable{ .{ .key = "inumber", .value = "42" }, .{ .key = "fnumber", .value = "2.4" } });
+    const p = try FromVars(X, &[_]KeyValue{ .{ .key = "inumber", .value = "42" }, .{ .key = "fnumber", .value = "2.4" } });
 
     try std.testing.expectEqual(42, p.inumber);
     try std.testing.expectEqual(2.4, p.fnumber);
