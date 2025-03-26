@@ -1,12 +1,11 @@
 const std = @import("std");
 const http = @import("std").http;
 
-const OnRequest = @import("router.zig").OnRequest;
 const KeyValue = @import("kv.zig").KeyValue;
-const Body = @import("request.zig").Body;
+const OnRequest = @import("request.zig").OnRequest;
 
 pub fn Server(comptime App: type) type {
-    const Router = @import("router.zig").Router(App, http.Server.Request);
+    const Router = @import("router.zig").Router(App, http.Server.Request, JsonBodyDecoder{});
 
     return struct {
         const Self = @This();
@@ -16,7 +15,7 @@ pub fn Server(comptime App: type) type {
 
         pub fn init(allocator: std.mem.Allocator) Self {
             return .{
-                ._router = Router.init(allocator),
+                ._router = Router.init(allocator, .{}),
             };
         }
 
@@ -51,13 +50,13 @@ pub fn Server(comptime App: type) type {
             // std.debug.print("Received body: {s} | {d}\n", .{ body, body_len });
 
             var vars: [7]KeyValue = undefined;
-            r.resolve(onRequest(req, try req.reader(), &vars));
+            r.resolve(onRequest(req, &vars));
 
             // try req.respond("hello world\n", std.http.Server.Request.RespondOptions{});
             try req.respond("", std.http.Server.Request.RespondOptions{ .status = .ok });
         }
 
-        fn onRequest(req: http.Server.Request, reader: std.io.AnyReader, vars: []KeyValue) OnRequest(http.Server.Request) {
+        fn onRequest(req: http.Server.Request, vars: []KeyValue) OnRequest(http.Server.Request) {
             const target = req.head.target;
             const index = std.mem.indexOfPos(u8, target, 0, "?");
 
@@ -69,12 +68,25 @@ pub fn Server(comptime App: type) type {
                 .method = req.head.method,
                 .path = path,
                 .query = vars[0..size],
-                .body = Body{ .reader = reader },
                 .request = req,
             };
         }
     };
 }
+
+pub const JsonBodyDecoder = struct {
+    pub fn decode(_: @This(), T: type, r: OnRequest(std.http.Server.Request)) std.json.Parsed(T) {
+        const allocator = std.heap.page_allocator;
+
+        var data = std.ArrayList(u8).init(allocator);
+        defer data.deinit();
+
+        var req = r.request;
+        const reader = req.reader() catch unreachable;
+        reader.readAllArrayList(&data, 10 * 1024) catch unreachable; // Max 10KB
+        return std.json.parseFromSlice(T, allocator, data.items, .{}) catch unreachable;
+    }
+};
 
 // URL encode
 // const queryString = try allocator.dupe(u8, input);

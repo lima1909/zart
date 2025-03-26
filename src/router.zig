@@ -1,24 +1,19 @@
 const std = @import("std");
 
-const KeyValue = @import("kv.zig").KeyValue;
-const matchitParser = @import("kv.zig").matchitParser;
+const kv = @import("kv.zig");
+const KeyValue = kv.KeyValue;
+
 const Body = @import("request.zig").Body;
 const handlerFromFn = @import("request.zig").handlerFromFn;
+const OnRequest = @import("request.zig").OnRequest;
 
-/// Is created by every Request.
-pub fn OnRequest(Request: type) type {
-    return struct {
-        method: std.http.Method,
-        path: []const u8,
-        query: []const KeyValue = &[_]KeyValue{},
-        body: Body = .none,
+const TreeConfig = @import("tree.zig").Config;
 
-        // the original Request
-        request: Request,
-    };
-}
+pub const Config = struct {
+    parser: kv.parse = kv.matchitParser,
+};
 
-pub fn Router(comptime App: type, comptime Request: type) type {
+pub fn Router(comptime App: type, comptime Request: type, decoder: anytype) type {
     const H = @import("request.zig").Handler(App, Request);
     const Tree = @import("tree.zig").Tree(H);
 
@@ -37,19 +32,19 @@ pub fn Router(comptime App: type, comptime Request: type) type {
 
         allocator: std.mem.Allocator,
 
-        pub fn init(allocator: std.mem.Allocator) Self {
-            return initWithApp(allocator, undefined);
+        pub fn init(allocator: std.mem.Allocator, cfg: Config) Self {
+            return initWithApp(allocator, undefined, cfg);
         }
 
-        pub fn initWithApp(allocator: std.mem.Allocator, app: ?App) Self {
-            const cfg = .{ .parser = matchitParser };
+        pub fn initWithApp(allocator: std.mem.Allocator, app: ?App, cfg: Config) Self {
+            const tcfg = TreeConfig{ .parser = cfg.parser };
 
             return .{
                 .allocator = allocator,
                 ._app = app,
-                ._get = Tree.init(allocator, cfg),
-                ._post = Tree.init(allocator, cfg),
-                ._other = Tree.init(allocator, cfg),
+                ._get = Tree.init(allocator, tcfg),
+                ._post = Tree.init(allocator, tcfg),
+                ._other = Tree.init(allocator, tcfg),
             };
         }
 
@@ -68,7 +63,7 @@ pub fn Router(comptime App: type, comptime Request: type) type {
         }
 
         pub inline fn addPath(self: *Self, method: std.http.Method, path: []const u8, handlerFn: anytype) !void {
-            const handler = handlerFromFn(App, Request, handlerFn);
+            const handler = handlerFromFn(App, Request, handlerFn, decoder);
             return try switch (method) {
                 .GET => self._get,
                 .POST => self._post,
@@ -84,13 +79,29 @@ pub fn Router(comptime App: type, comptime Request: type) type {
             }.resolve(req.path);
 
             if (matched.value) |handler| {
-                handler.handle(self._app, req.request, req.body, req.query, &matched.kvs) catch |err| {
+                handler.handle(self._app, req, req.query, &matched.kvs) catch |err| {
                     // TODO: replace this with an error handler
                     std.debug.print("ERROR by call handler: {}\n", .{err});
                 };
             }
 
             // TODO: else NOT FOUND handler
+        }
+    };
+}
+
+pub fn NoDecoder(Request: type, value: anytype) type {
+    return struct {
+        fn Decoded(T: type) type {
+            return struct {
+                comptime value: T = value,
+
+                pub fn deinit(_: @This()) void {}
+            };
+        }
+
+        pub fn decode(_: @This(), T: type, _: OnRequest(Request)) Decoded(T) {
+            return Decoded(T){};
         }
     };
 }
@@ -106,7 +117,7 @@ test "router for handler object" {
         }
     };
 
-    var router = Router(void, *i32).init(std.testing.allocator);
+    var router = Router(void, *i32, null).init(std.testing.allocator, .{});
     defer router.deinit();
 
     try router.get("/foo", struct {
@@ -131,7 +142,7 @@ test "router for i32" {
     const App = struct { value: i32 };
     var app = App{ .value = -1 };
 
-    var router = Router(*App, *i32).initWithApp(std.testing.allocator, &app);
+    var router = Router(*App, *i32, void).initWithApp(std.testing.allocator, &app, .{});
     defer router.deinit();
 
     try router.addPath(.HEAD, "/foo", struct {
@@ -151,7 +162,7 @@ test "router for i32" {
 const HttpRequest = std.http.Server.Request;
 
 test "router std.http.Server.Request" {
-    var router = Router(void, *HttpRequest).init(std.testing.allocator);
+    var router = Router(void, *HttpRequest, void).init(std.testing.allocator, .{});
     defer router.deinit();
 
     try router.post("/user/:id", struct {
@@ -191,7 +202,7 @@ test "router std.http.Server.Request" {
 }
 
 test "router for struct params" {
-    var router = Router(void, *i32).init(std.testing.allocator);
+    var router = Router(void, *i32, void).init(std.testing.allocator, .{});
     defer router.deinit();
 
     const Ok = struct { ok: bool };
@@ -210,7 +221,7 @@ test "router for struct params" {
 }
 
 test "router for params" {
-    var router = Router(void, *i32).init(std.testing.allocator);
+    var router = Router(void, *i32, void).init(std.testing.allocator, .{});
     defer router.deinit();
 
     try router.addPath(.POST, "/foo/:id", struct {
@@ -227,7 +238,7 @@ test "router for params" {
 }
 
 test "first Params, than request" {
-    var router = Router(void, *i32).init(std.testing.allocator);
+    var router = Router(void, *i32, void).init(std.testing.allocator, .{});
     defer router.deinit();
 
     try router.get("/foo/:id", struct {
@@ -243,7 +254,7 @@ test "first Params, than request" {
 }
 
 test "with query" {
-    var router = Router(void, *i32).init(std.testing.allocator);
+    var router = Router(void, *i32, void).init(std.testing.allocator, .{});
     defer router.deinit();
 
     try router.get("/foo", struct {
@@ -264,7 +275,7 @@ test "with query" {
 }
 
 test "with Q" {
-    var router = Router(void, *i32).init(std.testing.allocator);
+    var router = Router(void, *i32, void).init(std.testing.allocator, .{});
     defer router.deinit();
 
     const Id = struct { id: i32 };
@@ -287,10 +298,11 @@ test "with Q" {
 }
 
 test "with B" {
-    var router = Router(void, *i32).init(std.testing.allocator);
-    defer router.deinit();
-
     const Id = struct { id: i32 };
+    const decoder = NoDecoder(*i32, B(Id){ .id = 42 }){};
+
+    var router = Router(void, *i32, decoder).init(std.testing.allocator, .{});
+    defer router.deinit();
 
     try router.get("/foo", struct {
         fn foo(b: B(Id), i: *i32) anyerror!void {
@@ -299,12 +311,7 @@ test "with B" {
     }.foo);
 
     var i: i32 = 3;
-    router.resolve(.{
-        .method = .GET,
-        .path = "/foo",
-        .body = Body{ .string = "{ \"id\" : 42 }" },
-        .request = &i,
-    });
+    router.resolve(.{ .method = .GET, .path = "/foo", .request = &i });
 
     try std.testing.expectEqual(45, i);
 }
