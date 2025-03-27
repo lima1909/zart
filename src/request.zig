@@ -27,19 +27,23 @@ pub fn OnRequest(Request: type) type {
     };
 }
 
+pub const HandlerConfig = struct {
+    allocator: std.mem.Allocator = undefined,
+};
+
 // Examples for Handler function signatures:
 //   - fn (req: Request)
 //   - fn (req: Request, params: Params)
 //   - fn (app: App, req: Request, params: P(MyParam))
 //   - fn (app: App, req: Request)
 //
-pub fn Handler(comptime App: type, comptime Request: type) type {
+pub fn Handler(App: type, Request: type) type {
     return struct {
-        handle: *const fn (app: ?App, req: OnRequest(Request), query: []const KeyValue, params: []const KeyValue) anyerror!void,
+        handle: *const fn (app: ?App, req: OnRequest(Request), query: []const KeyValue, params: []const KeyValue, cfg: HandlerConfig) anyerror!void,
     };
 }
 
-pub fn handlerFromFn(comptime App: type, comptime Request: type, func: anytype, decoder: anytype) Handler(App, Request) {
+pub fn handlerFromFn(App: type, Request: type, Decoder: type, func: anytype) Handler(App, Request) {
     const meta = @typeInfo(@TypeOf(func));
     comptime var kinds: [meta.Fn.params.len]Kind = undefined;
 
@@ -69,7 +73,7 @@ pub fn handlerFromFn(comptime App: type, comptime Request: type, func: anytype, 
     }
 
     const h = struct {
-        fn handle(app: ?App, req: OnRequest(Request), query: []const KeyValue, params: []const KeyValue) !void {
+        fn handle(app: ?App, req: OnRequest(Request), query: []const KeyValue, params: []const KeyValue, cfg: HandlerConfig) !void {
             const Args = std.meta.ArgsTuple(@TypeOf(func));
             var args: Args = undefined;
 
@@ -83,7 +87,7 @@ pub fn handlerFromFn(comptime App: type, comptime Request: type, func: anytype, 
                     .query => Query{ .vars = query },
                     // .b => |b| try body.parse(b.typ),
                     .b => |b| blk: {
-                        const decoded = decoder.decode(b.typ, req);
+                        const decoded = try Decoder.init(cfg).decode(b.typ, req);
                         defer decoded.deinit();
 
                         break :blk decoded.value;

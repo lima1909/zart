@@ -13,7 +13,7 @@ pub const Config = struct {
     parser: kv.parse = kv.matchitParser,
 };
 
-pub fn Router(comptime App: type, comptime Request: type, decoder: anytype) type {
+pub fn Router(App: type, Request: type, Decoder: type) type {
     const H = @import("request.zig").Handler(App, Request);
     const Tree = @import("tree.zig").Tree(H);
 
@@ -63,7 +63,12 @@ pub fn Router(comptime App: type, comptime Request: type, decoder: anytype) type
         }
 
         pub inline fn addPath(self: *Self, method: std.http.Method, path: []const u8, handlerFn: anytype) !void {
-            const handler = handlerFromFn(App, Request, handlerFn, decoder);
+            const handler = handlerFromFn(
+                App,
+                Request,
+                Decoder,
+                handlerFn,
+            );
             return try switch (method) {
                 .GET => self._get,
                 .POST => self._post,
@@ -79,29 +84,13 @@ pub fn Router(comptime App: type, comptime Request: type, decoder: anytype) type
             }.resolve(req.path);
 
             if (matched.value) |handler| {
-                handler.handle(self._app, req, req.query, &matched.kvs) catch |err| {
+                handler.handle(self._app, req, req.query, &matched.kvs, .{ .allocator = self.allocator }) catch |err| {
                     // TODO: replace this with an error handler
                     std.debug.print("ERROR by call handler: {}\n", .{err});
                 };
             }
 
             // TODO: else NOT FOUND handler
-        }
-    };
-}
-
-pub fn NoDecoder(Request: type, value: anytype) type {
-    return struct {
-        fn Decoded(T: type) type {
-            return struct {
-                comptime value: T = value,
-
-                pub fn deinit(_: @This()) void {}
-            };
-        }
-
-        pub fn decode(_: @This(), T: type, _: OnRequest(Request)) Decoded(T) {
-            return Decoded(T){};
         }
     };
 }
@@ -117,7 +106,7 @@ test "router for handler object" {
         }
     };
 
-    var router = Router(void, *i32, null).init(std.testing.allocator, .{});
+    var router = Router(void, *i32, void).init(std.testing.allocator, .{});
     defer router.deinit();
 
     try router.get("/foo", struct {
@@ -297,11 +286,39 @@ test "with Q" {
     try std.testing.expectEqual(45, i);
 }
 
+const HandlerConfig = @import("request.zig").HandlerConfig;
+
+/// Only for test purpose
+fn NoDecoder(Request: type, value: anytype) type {
+    return struct {
+        const Self = @This();
+
+        cfg: HandlerConfig,
+
+        fn Decoded(T: type) type {
+            return struct {
+                comptime value: T = value,
+
+                pub fn deinit(_: @This()) void {}
+            };
+        }
+
+        pub fn init(cfg: HandlerConfig) Self {
+            return Self{ .cfg = cfg };
+        }
+
+        pub fn decode(_: Self, T: type, _: OnRequest(Request)) !Decoded(T) {
+            // return Decoded(T){ .value = self.value };
+            return Decoded(T){};
+        }
+    };
+}
+
 test "with B" {
     const Id = struct { id: i32 };
-    const decoder = NoDecoder(*i32, B(Id){ .id = 42 }){};
+    const value = B(Id){ .id = 42 };
 
-    var router = Router(void, *i32, decoder).init(std.testing.allocator, .{});
+    var router = Router(void, *i32, NoDecoder(*i32, value)).init(std.testing.allocator, .{});
     defer router.deinit();
 
     try router.get("/foo", struct {

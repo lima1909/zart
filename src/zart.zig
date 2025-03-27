@@ -7,6 +7,8 @@ test {
     _ = @import("./request.zig");
     _ = @import("./router.zig");
     _ = @import("./tree.zig");
+
+    _ = @import("./server.zig");
 }
 
 // - find first wildcard = parsePath() -> (prefix, suffix, KEY) OR None OR Error

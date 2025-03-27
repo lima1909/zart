@@ -5,7 +5,7 @@ const KeyValue = @import("kv.zig").KeyValue;
 const OnRequest = @import("request.zig").OnRequest;
 
 pub fn Server(comptime App: type) type {
-    const Router = @import("router.zig").Router(App, http.Server.Request, JsonBodyDecoder{});
+    const Router = @import("router.zig").Router(App, http.Server.Request, JsonBodyDecoder);
 
     return struct {
         const Self = @This();
@@ -74,17 +74,22 @@ pub fn Server(comptime App: type) type {
     };
 }
 
+const HandlerConfig = @import("request.zig").HandlerConfig;
+
 pub const JsonBodyDecoder = struct {
-    pub fn decode(_: @This(), T: type, r: OnRequest(std.http.Server.Request)) std.json.Parsed(T) {
-        const allocator = std.heap.page_allocator;
+    const Self = @This();
 
-        var data = std.ArrayList(u8).init(allocator);
-        defer data.deinit();
+    allocator: std.mem.Allocator,
 
+    pub fn init(cfg: HandlerConfig) Self {
+        return Self{ .allocator = cfg.allocator };
+    }
+
+    pub fn decode(self: Self, T: type, r: OnRequest(std.http.Server.Request)) !std.json.Parsed(T) {
         var req = r.request;
-        const reader = req.reader() catch unreachable;
-        reader.readAllArrayList(&data, 10 * 1024) catch unreachable; // Max 10KB
-        return std.json.parseFromSlice(T, allocator, data.items, .{}) catch unreachable;
+        const reader = try req.reader();
+
+        return try std.json.parseFromSlice(T, self.allocator, try reader.readAllAlloc(self.allocator, 10 * 1024), .{});
     }
 };
 
