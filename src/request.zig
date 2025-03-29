@@ -11,7 +11,8 @@ const Kind = union(enum) {
     params,
     q: struct { typ: type }, // fromVars
     query,
-    b: struct { typ: type },
+    b: struct { typ: type }, // decoder
+    body,
     fromRequest: struct { typ: type }, // argType, e.g. Body.fromRequest
 };
 
@@ -27,10 +28,6 @@ pub fn OnRequest(Request: type) type {
     };
 }
 
-pub const HandlerConfig = struct {
-    allocator: std.mem.Allocator = undefined,
-};
-
 // Examples for Handler function signatures:
 //   - fn (req: Request)
 //   - fn (req: Request, params: Params)
@@ -39,11 +36,11 @@ pub const HandlerConfig = struct {
 //
 pub fn Handler(App: type, Request: type) type {
     return struct {
-        handle: *const fn (app: ?App, req: OnRequest(Request), query: []const KeyValue, params: []const KeyValue, cfg: HandlerConfig) anyerror!void,
+        handle: *const fn (app: ?App, req: Request, query: []const KeyValue, params: []const KeyValue, allocator: std.mem.Allocator) anyerror!void,
     };
 }
 
-pub fn handlerFromFn(App: type, Request: type, Decoder: type, func: anytype) Handler(App, Request) {
+pub fn handlerFromFn(App: type, Request: type, func: anytype, decode: anytype) Handler(App, Request) {
     const meta = @typeInfo(@TypeOf(func));
     comptime var kinds: [meta.Fn.params.len]Kind = undefined;
 
@@ -54,6 +51,7 @@ pub fn handlerFromFn(App: type, Request: type, Decoder: type, func: anytype) Han
                 Request => kinds[i] = .request,
                 Params => kinds[i] = .params,
                 Query => kinds[i] = .query,
+                Body => kinds[i] = .body,
                 else => if (@hasField(ty, TagFieldName)) {
                     // TODO: zig 0.14
                     // kinds[i] = @FieldType(ty, TagFieldName).kind(ty);
@@ -73,26 +71,21 @@ pub fn handlerFromFn(App: type, Request: type, Decoder: type, func: anytype) Han
     }
 
     const h = struct {
-        fn handle(app: ?App, req: OnRequest(Request), query: []const KeyValue, params: []const KeyValue, cfg: HandlerConfig) !void {
+        fn handle(app: ?App, req: Request, query: []const KeyValue, params: []const KeyValue, allocator: std.mem.Allocator) !void {
             const Args = std.meta.ArgsTuple(@TypeOf(func));
             var args: Args = undefined;
 
             inline for (0..kinds.len) |i| {
                 args[i] = switch (kinds[i]) {
                     .app => app.?,
-                    .request => req.request,
+                    .request => req,
                     .p => |p| try FromVars(p.typ, params),
                     .params => Params{ .vars = params },
                     .q => |q| try FromVars(q.typ, query),
                     .query => Query{ .vars = query },
-                    // .b => |b| try body.parse(b.typ),
-                    .b => |b| blk: {
-                        const decoded = try Decoder.init(cfg).decode(b.typ, req);
-                        defer decoded.deinit();
-
-                        break :blk decoded.value;
-                    },
-                    .fromRequest => |r| r.typ.fromRequest(req.request),
+                    .b => |b| try decode(b.typ, req, allocator),
+                    .body => try decode(std.json.Value, req, allocator),
+                    .fromRequest => |r| r.typ.fromRequest(req),
                 };
             }
 
@@ -137,10 +130,15 @@ const BodyTag = struct {
     }
 };
 
+/// Marker, marked the given Struct as Body
 pub fn B(comptime S: type) type {
     return structWithTag(S, BodyTag);
 }
 
+/// Body from request as abstract Json-Value
+pub const Body = std.json.Value;
+
+/// Field name for the Tags.
 const TagFieldName = "__TAG__";
 
 fn structWithTag(comptime S: type, comptime Tag: type) type {

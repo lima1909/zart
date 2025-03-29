@@ -1,19 +1,20 @@
 const std = @import("std");
 
-const kv = @import("kv.zig");
-const KeyValue = kv.KeyValue;
-
-const Body = @import("request.zig").Body;
 const handlerFromFn = @import("request.zig").handlerFromFn;
 const OnRequest = @import("request.zig").OnRequest;
 
 const TreeConfig = @import("tree.zig").Config;
+const kv = @import("kv.zig");
 
 pub const Config = struct {
     parser: kv.parse = kv.matchitParser,
 };
 
-pub fn Router(App: type, Request: type, Decoder: type) type {
+///
+/// signature for decodeFn: fn decode(T: type, req: Request, allocator: std.mem.Allocator) !T {
+/// where T)means a struct with a value field
+///
+pub fn Router(App: type, Request: type, decodeFn: anytype) type {
     const H = @import("request.zig").Handler(App, Request);
     const Tree = @import("tree.zig").Tree(H);
 
@@ -66,8 +67,8 @@ pub fn Router(App: type, Request: type, Decoder: type) type {
             const handler = handlerFromFn(
                 App,
                 Request,
-                Decoder,
                 handlerFn,
+                decodeFn,
             );
             return try switch (method) {
                 .GET => self._get,
@@ -84,7 +85,12 @@ pub fn Router(App: type, Request: type, Decoder: type) type {
             }.resolve(req.path);
 
             if (matched.value) |handler| {
-                handler.handle(self._app, req, req.query, &matched.kvs, .{ .allocator = self.allocator }) catch |err| {
+
+                // TODO: replace self.allocator
+                var arena = std.heap.ArenaAllocator.init(self.allocator);
+                defer arena.deinit();
+
+                handler.handle(self._app, req.request, req.query, &matched.kvs, arena.allocator()) catch |err| {
                     // TODO: replace this with an error handler
                     std.debug.print("ERROR by call handler: {}\n", .{err});
                 };
@@ -126,6 +132,7 @@ const Q = @import("request.zig").Q;
 const B = @import("request.zig").B;
 const Params = @import("request.zig").Params;
 const Query = @import("request.zig").Query;
+const Body = @import("request.zig").Body;
 
 test "router for i32" {
     const App = struct { value: i32 };
@@ -256,7 +263,7 @@ test "with query" {
     router.resolve(.{
         .method = .GET,
         .path = "/foo",
-        .query = &[_]KeyValue{.{ .key = "id", .value = "42" }},
+        .query = &[_]kv.KeyValue{.{ .key = "id", .value = "42" }},
         .request = &i,
     });
 
@@ -279,51 +286,51 @@ test "with Q" {
     router.resolve(.{
         .method = .GET,
         .path = "/foo",
-        .query = &[_]KeyValue{.{ .key = "id", .value = "42" }},
+        .query = &[_]kv.KeyValue{.{ .key = "id", .value = "42" }},
         .request = &i,
     });
 
     try std.testing.expectEqual(45, i);
 }
 
-const HandlerConfig = @import("request.zig").HandlerConfig;
-
-/// Only for test purpose
-fn NoDecoder(Request: type, value: anytype) type {
-    return struct {
-        const Self = @This();
-
-        cfg: HandlerConfig,
-
-        fn Decoded(T: type) type {
-            return struct {
-                comptime value: T = value,
-
-                pub fn deinit(_: @This()) void {}
-            };
-        }
-
-        pub fn init(cfg: HandlerConfig) Self {
-            return Self{ .cfg = cfg };
-        }
-
-        pub fn decode(_: Self, T: type, _: OnRequest(Request)) !Decoded(T) {
-            // return Decoded(T){ .value = self.value };
-            return Decoded(T){};
-        }
-    };
-}
-
 test "with B" {
     const Id = struct { id: i32 };
-    const value = B(Id){ .id = 42 };
+    const decoder = struct {
+        pub fn decode(T: type, _: *i32, _: std.mem.Allocator) !T {
+            return B(Id){ .id = 42 };
+        }
+    }.decode;
 
-    var router = Router(void, *i32, NoDecoder(*i32, value)).init(std.testing.allocator, .{});
+    var router = Router(void, *i32, decoder).init(std.testing.allocator, .{});
     defer router.deinit();
 
     try router.get("/foo", struct {
         fn foo(b: B(Id), i: *i32) anyerror!void {
             i.* += b.id;
+        }
+    }.foo);
+
+    var i: i32 = 3;
+    router.resolve(.{ .method = .GET, .path = "/foo", .request = &i });
+
+    try std.testing.expectEqual(45, i);
+}
+
+test "with Body" {
+    const decoder = struct {
+        pub fn decode(T: type, _: *i32, allocator: std.mem.Allocator) !T {
+            return try std.json.parseFromSliceLeaky(T, allocator, "{\"id\": 42}", .{});
+        }
+    }.decode;
+
+    var router = Router(void, *i32, decoder).init(std.testing.allocator, .{});
+    defer router.deinit();
+
+    try router.get("/foo", struct {
+        fn foo(b: Body, i: *i32) anyerror!void {
+            const obj = b.object;
+            const id = obj.get("id") orelse .null;
+            i.* += @intCast(id.integer);
         }
     }.foo);
 

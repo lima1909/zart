@@ -2,7 +2,9 @@ const std = @import("std");
 const http = @import("std").http;
 
 const KeyValue = @import("kv.zig").KeyValue;
+
 const OnRequest = @import("request.zig").OnRequest;
+const HandlerConfig = @import("request.zig").HandlerConfig;
 
 pub fn Server(comptime App: type) type {
     const Router = @import("router.zig").Router(App, http.Server.Request, JsonBodyDecoder);
@@ -74,24 +76,14 @@ pub fn Server(comptime App: type) type {
     };
 }
 
-const HandlerConfig = @import("request.zig").HandlerConfig;
-
 pub const JsonBodyDecoder = struct {
-    const Self = @This();
-
-    allocator: std.mem.Allocator,
-
-    pub fn init(cfg: HandlerConfig) Self {
-        return Self{ .allocator = cfg.allocator };
-    }
-
-    pub fn decode(self: Self, T: type, r: OnRequest(std.http.Server.Request)) !std.json.Parsed(T) {
-        var req = r.request;
+    pub fn decode(T: type, r: std.http.Server.Request, allocator: std.mem.Allocator) !T {
+        var req = r;
         const reader = try req.reader();
 
-        return try std.json.parseFromSlice(T, self.allocator, try reader.readAllAlloc(self.allocator, 10 * 1024), .{});
+        return try std.json.parseFromSliceLeaky(T, allocator, try reader.readAllAlloc(allocator, 10 * 1024), .{});
     }
-};
+}.decode;
 
 // URL encode
 // const queryString = try allocator.dupe(u8, input);
