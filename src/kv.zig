@@ -25,9 +25,9 @@ pub fn KeyValues(Tag: type) type {
         pub inline fn valueAs(self: *const Self, T: type, key: []const u8) !?T {
             if (self.value(key)) |v| {
                 return switch (@typeInfo(T)) {
-                    .Int => try std.fmt.parseInt(T, v, 10),
-                    .Float => try std.fmt.parseFloat(T, v),
-                    .Bool => {
+                    .int => try std.fmt.parseInt(T, v, 10),
+                    .float => try std.fmt.parseFloat(T, v),
+                    .bool => {
                         if (std.mem.eql(u8, v, "true")) {
                             return true;
                         } else if (std.mem.eql(u8, v, "false")) {
@@ -35,7 +35,7 @@ pub fn KeyValues(Tag: type) type {
                         }
                         return error.InvalidBool;
                     },
-                    .Pointer => |p| if (p.child == u8) v else null,
+                    .pointer => |p| if (p.child == u8) v else null,
                     else => @compileError("not supported type: " ++ @typeName(T) ++ " for key: " ++ key),
                 };
             }

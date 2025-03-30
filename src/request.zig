@@ -42,9 +42,9 @@ pub fn Handler(App: type, Request: type) type {
 
 pub fn handlerFromFn(App: type, Request: type, func: anytype, decode: anytype) Handler(App, Request) {
     const meta = @typeInfo(@TypeOf(func));
-    comptime var kinds: [meta.Fn.params.len]Kind = undefined;
+    comptime var kinds: [meta.@"fn".params.len]Kind = undefined;
 
-    inline for (meta.Fn.params, 0..) |p, i| {
+    inline for (meta.@"fn".params, 0..) |p, i| {
         if (p.type) |ty| {
             switch (ty) {
                 App => kinds[i] = .app,
@@ -53,14 +53,7 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, decode: anytype) H
                 Query => kinds[i] = .query,
                 Body => kinds[i] = .body,
                 else => if (@hasField(ty, TagFieldName)) {
-                    // TODO: zig 0.14
-                    // kinds[i] = @FieldType(ty, TagFieldName).kind(ty);
-                    const fs = @typeInfo(ty).Struct.fields;
-                    inline for (fs) |f| {
-                        if (comptime std.mem.eql(u8, f.name, TagFieldName)) {
-                            kinds[i] = f.type.kind(ty);
-                        }
-                    }
+                    kinds[i] = @FieldType(ty, TagFieldName).kind(ty);
                 } else {
                     kinds[i] = Kind{ .fromRequest = .{ .typ = ty } };
                 },
@@ -143,12 +136,12 @@ const TagFieldName = "__TAG__";
 
 fn structWithTag(comptime S: type, comptime Tag: type) type {
     return @Type(.{
-        .Struct = .{
+        .@"struct" = .{
             .layout = .auto,
-            .fields = @typeInfo(S).Struct.fields ++ [1]std.builtin.Type.StructField{.{
+            .fields = @typeInfo(S).@"struct".fields ++ [1]std.builtin.Type.StructField{.{
                 .name = TagFieldName,
                 .type = Tag,
-                .default_value = &Tag{},
+                .default_value_ptr = &Tag{},
                 .is_comptime = false,
                 .alignment = 0,
             }},
@@ -164,8 +157,8 @@ fn FromVars(comptime S: type, vars: []const KeyValue) !S {
     const vs = KeyValues(void){ .vars = vars };
 
     const info = @typeInfo(S);
-    if (info == .Struct) {
-        inline for (info.Struct.fields) |field| {
+    if (info == .@"struct") {
+        inline for (info.@"struct".fields) |field| {
             if (!comptime std.mem.eql(u8, TagFieldName, field.name)) {
                 @field(instance, field.name) = if (try vs.valueAs(field.type, field.name)) |val| val else undefined;
             }
