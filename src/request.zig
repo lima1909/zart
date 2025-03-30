@@ -46,18 +46,20 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, decode: anytype) H
 
     inline for (meta.@"fn".params, 0..) |p, i| {
         if (p.type) |ty| {
-            switch (ty) {
-                App => kinds[i] = .app,
-                Request => kinds[i] = .request,
-                Params => kinds[i] = .params,
-                Query => kinds[i] = .query,
-                Body => kinds[i] = .body,
-                else => if (@hasField(ty, TagFieldName)) {
-                    kinds[i] = @FieldType(ty, TagFieldName).kind(ty);
-                } else {
-                    kinds[i] = Kind{ .fromRequest = .{ .typ = ty } };
-                },
-            }
+            kinds[i] = switch (ty) {
+                App => .app,
+                Request => .request,
+                Params => .params,
+                Query => .query,
+                Body => .body,
+                else => if (@typeInfo(ty) == .@"struct")
+                    if (@hasField(ty, TagFieldName))
+                        @FieldType(ty, TagFieldName).kind(ty)
+                    else
+                        Kind{ .fromRequest = .{ .typ = ty } }
+                else
+                    @compileError("Not supported parameter type for a handler function: " ++ @typeName(ty)),
+            };
         } else {
             @compileError("Missing type for parameter in function: " ++ @typeName(meta.Fn));
         }

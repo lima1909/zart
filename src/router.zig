@@ -339,3 +339,32 @@ test "with Body" {
 
     try std.testing.expectEqual(45, i);
 }
+
+test "request with two args" {
+    const Req = struct { *i32, bool };
+
+    const decoder = struct {
+        pub fn decode(T: type, _: Req, allocator: std.mem.Allocator) !T {
+            return try std.json.parseFromSliceLeaky(T, allocator, "{\"id\": 45}", .{});
+        }
+    }.decode;
+
+    var router = Router(void, Req, decoder).init(std.testing.allocator, .{});
+    defer router.deinit();
+
+    try router.get("/foo", struct {
+        fn foo(r: Req, b: Body) anyerror!void {
+            const obj = b.object;
+            const id = obj.get("id") orelse .null;
+
+            const i = r[0];
+            i.* += @intCast(id.integer);
+            try std.testing.expect(r[1]);
+        }
+    }.foo);
+
+    var i: i32 = 3;
+    router.resolve(.{ .method = .GET, .path = "/foo", .request = .{ &i, true } });
+
+    try std.testing.expectEqual(48, i);
+}
