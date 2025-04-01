@@ -116,7 +116,7 @@ test "router for handler object" {
     defer router.deinit();
 
     try router.get("/foo", struct {
-        fn user(u: ReqObject) anyerror!void {
+        fn user(u: ReqObject) void {
             u.i.* += 1;
         }
     }.user);

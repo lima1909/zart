@@ -3,19 +3,6 @@ const std = @import("std");
 const KeyValue = @import("kv.zig").KeyValue;
 const KeyValues = @import("kv.zig").KeyValues;
 
-/// Kinds of handler Args (parts of an request)
-const Kind = union(enum) {
-    app,
-    request,
-    p: struct { typ: type }, // fromVars
-    params,
-    q: struct { typ: type }, // fromVars
-    query,
-    b: struct { typ: type }, // decoder
-    body,
-    fromRequest: struct { typ: type }, // argType, e.g. Body.fromRequest
-};
-
 /// Is created by every Request.
 pub fn OnRequest(Request: type) type {
     return struct {
@@ -27,6 +14,26 @@ pub fn OnRequest(Request: type) type {
         request: Request,
     };
 }
+
+/// ArgTypes of handler Args (parts of an request)
+const ArgType = union(enum) {
+    app,
+    request,
+    p: struct { typ: type }, // fromVars
+    params,
+    q: struct { typ: type }, // fromVars
+    query,
+    b: struct { typ: type }, // decoder
+    body,
+    fromRequest: struct { typ: type }, // argType, e.g. Body.fromRequest
+};
+
+/// ReturnTypes of handler returns
+const ReturnType = union(enum) {
+    none,
+    strukt,
+    error_union: std.builtin.Type.ErrorUnion,
+};
 
 // Examples for Handler function signatures:
 //   - fn (req: Request)
@@ -42,11 +49,12 @@ pub fn Handler(App: type, Request: type) type {
 
 pub fn handlerFromFn(App: type, Request: type, func: anytype, decode: anytype) Handler(App, Request) {
     const meta = @typeInfo(@TypeOf(func));
-    comptime var kinds: [meta.@"fn".params.len]Kind = undefined;
+    comptime var arg_types: [meta.@"fn".params.len]ArgType = undefined;
 
+    // check the function args
     inline for (meta.@"fn".params, 0..) |p, i| {
         if (p.type) |ty| {
-            kinds[i] = switch (ty) {
+            arg_types[i] = switch (ty) {
                 App => .app,
                 Request => .request,
                 Params => .params,
@@ -54,9 +62,9 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, decode: anytype) H
                 Body => .body,
                 else => if (@typeInfo(ty) == .@"struct")
                     if (@hasField(ty, TagFieldName))
-                        @FieldType(ty, TagFieldName).kind(ty)
+                        @FieldType(ty, TagFieldName).argType(ty)
                     else
-                        Kind{ .fromRequest = .{ .typ = ty } }
+                        ArgType{ .fromRequest = .{ .typ = ty } }
                 else
                     @compileError("Not supported parameter type for a handler function: " ++ @typeName(ty)),
             };
@@ -65,13 +73,24 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, decode: anytype) H
         }
     }
 
+    // check the return type
+    const return_type: ReturnType = if (meta.@"fn".return_type) |ty|
+        switch (@typeInfo(ty)) {
+            .error_union => |err| ReturnType{ .error_union = err },
+            .void => .none,
+            .@"struct" => .strukt,
+            else => @compileError("Not supported return type: " ++ @typeName(ty)),
+        }
+    else
+        @compileError("Not supported return type found");
+
     const h = struct {
         fn handle(app: ?App, req: Request, query: []const KeyValue, params: []const KeyValue, allocator: std.mem.Allocator) !void {
             const Args = std.meta.ArgsTuple(@TypeOf(func));
             var args: Args = undefined;
 
-            inline for (0..kinds.len) |i| {
-                args[i] = switch (kinds[i]) {
+            inline for (0..arg_types.len) |i| {
+                args[i] = switch (arg_types[i]) {
                     .app => app.?,
                     .request => req,
                     .p => |p| try FromVars(p.typ, params),
@@ -84,6 +103,12 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, decode: anytype) H
                 };
             }
 
+            _ = return_type;
+            // switch (return_type) {
+            //     .none => return @call(.auto, func, args),
+            //     .strukt => return @call(.auto, func, args),
+            //     .error_union => return @call(.auto, func, args),
+            // }
             return @call(.auto, func, args);
         }
     };
@@ -92,8 +117,8 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, decode: anytype) H
 }
 
 const ParamTag = struct {
-    fn kind(comptime T: type) Kind {
-        return Kind{ .p = .{ .typ = T } };
+    fn argType(comptime T: type) ArgType {
+        return ArgType{ .p = .{ .typ = T } };
     }
 };
 
@@ -106,8 +131,8 @@ pub fn P(comptime S: type) type {
 }
 
 const QueryTag = struct {
-    fn kind(comptime T: type) Kind {
-        return Kind{ .q = .{ .typ = T } };
+    fn argType(comptime T: type) ArgType {
+        return ArgType{ .q = .{ .typ = T } };
     }
 };
 
@@ -120,8 +145,8 @@ pub fn Q(comptime S: type) type {
 }
 
 const BodyTag = struct {
-    fn kind(comptime T: type) Kind {
-        return Kind{ .b = .{ .typ = T } };
+    fn argType(comptime T: type) ArgType {
+        return ArgType{ .b = .{ .typ = T } };
     }
 };
 
@@ -192,4 +217,17 @@ test "fromVars int and foat field" {
 
     try std.testing.expectEqual(42, p.inumber);
     try std.testing.expectEqual(2.4, p.fnumber);
+}
+
+test "func with void return" {
+    const h = handlerFromFn(
+        void,
+        i32,
+        struct {
+            fn foo(_: i32) void {}
+        }.foo,
+        void,
+    );
+
+    _ = try h.handle(null, 1, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);
 }
