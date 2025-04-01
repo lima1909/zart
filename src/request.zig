@@ -219,15 +219,10 @@ test "fromVars int and foat field" {
     try std.testing.expectEqual(2.4, p.fnumber);
 }
 
-test "func with void return" {
-    const h = handlerFromFn(
-        void,
-        i32,
-        struct {
-            fn foo(_: i32) void {}
-        }.foo,
-        void,
-    );
+test "handler with no args and void return" {
+    const h = handlerFromFn(void, void, struct {
+        fn foo() void {}
+    }.foo, void);
 
-    _ = try h.handle(null, 1, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);
+    _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);
 }
