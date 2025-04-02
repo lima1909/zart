@@ -15,6 +15,11 @@ pub fn OnRequest(Request: type) type {
     };
 }
 
+pub const Response = struct {
+    content: ?[]const u8 = null,
+    status: std.http.Status = .ok,
+};
+
 /// ArgTypes of handler Args (parts of an request)
 const ArgType = union(enum) {
     app,
@@ -43,7 +48,7 @@ const ReturnType = union(enum) {
 //
 pub fn Handler(App: type, Request: type) type {
     return struct {
-        handle: *const fn (app: ?App, req: Request, query: []const KeyValue, params: []const KeyValue, allocator: std.mem.Allocator) anyerror!void,
+        handle: *const fn (app: ?App, req: Request, query: []const KeyValue, params: []const KeyValue, allocator: std.mem.Allocator) anyerror!?Response,
     };
 }
 
@@ -85,7 +90,7 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, decode: anytype) H
         @compileError("Not supported return type found");
 
     const h = struct {
-        fn handle(app: ?App, req: Request, query: []const KeyValue, params: []const KeyValue, allocator: std.mem.Allocator) !void {
+        fn handle(app: ?App, req: Request, query: []const KeyValue, params: []const KeyValue, allocator: std.mem.Allocator) !?Response {
             const Args = std.meta.ArgsTuple(@TypeOf(func));
             var args: Args = undefined;
 
@@ -103,13 +108,22 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, decode: anytype) H
                 };
             }
 
-            _ = return_type;
-            // switch (return_type) {
-            //     .none => return @call(.auto, func, args),
-            //     .strukt => return @call(.auto, func, args),
-            //     .error_union => return @call(.auto, func, args),
-            // }
-            return @call(.auto, func, args);
+            switch (return_type) {
+                .none => {
+                    // mapping void to null (no Response available)
+                    _ = @call(.auto, func, args);
+                    return null;
+                },
+                .strukt => return @call(.auto, func, args),
+                .error_union => |eu| {
+                    // mapping void to null (no Response available)
+                    if (@typeInfo(eu.payload) == .void) {
+                        _ = try @call(.auto, func, args);
+                        return null;
+                    }
+                    return @call(.auto, func, args);
+                },
+            }
         }
     };
 
@@ -222,6 +236,14 @@ test "fromVars int and foat field" {
 test "handler with no args and void return" {
     const h = handlerFromFn(void, void, struct {
         fn foo() void {}
+    }.foo, void);
+
+    _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);
+}
+
+test "handler with no args and error_union with void return" {
+    const h = handlerFromFn(void, void, struct {
+        fn foo() !void {}
     }.foo, void);
 
     _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);

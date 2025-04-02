@@ -2,6 +2,7 @@ const std = @import("std");
 
 const handlerFromFn = @import("request.zig").handlerFromFn;
 const OnRequest = @import("request.zig").OnRequest;
+const Response = @import("request.zig").Response;
 
 const TreeConfig = @import("tree.zig").Config;
 const kv = @import("kv.zig");
@@ -29,7 +30,9 @@ pub fn Router(App: type, Request: type, decodeFn: anytype) type {
         _other: Tree,
 
         // error_handler
+        error_handler: ?*const fn (Request) Response = null,
         // not_found_handler
+        not_found: ?*const fn (Request) Response = null,
 
         allocator: std.mem.Allocator,
 
@@ -77,7 +80,7 @@ pub fn Router(App: type, Request: type, decodeFn: anytype) type {
             }.insert(path, handler);
         }
 
-        pub fn resolve(self: *const Self, req: OnRequest(Request)) void {
+        pub fn resolve(self: *const Self, req: OnRequest(Request)) ?Response {
             const matched = switch (req.method) {
                 .GET => self._get,
                 .POST => self._post,
@@ -90,13 +93,23 @@ pub fn Router(App: type, Request: type, decodeFn: anytype) type {
                 var arena = std.heap.ArenaAllocator.init(self.allocator);
                 defer arena.deinit();
 
-                handler.handle(self._app, req.request, req.query, &matched.kvs, arena.allocator()) catch |err| {
-                    // TODO: replace this with an error handler
-                    std.debug.print("ERROR by call handler: {}\n", .{err});
+                return handler.handle(self._app, req.request, req.query, &matched.kvs, arena.allocator()) catch |err| {
+                    // handle error
+                    if (self.error_handler) |eh| {
+                        return eh(req.request);
+                    }
+
+                    var buffer: [50]u8 = undefined;
+                    _ = std.fmt.bufPrint(&buffer, "{s}{any}", .{ "ERROR in handler: ", err }) catch "ERROR in handler";
+                    return .{ .status = .bad_request, .content = "ERROR in handler" };
                 };
             }
 
-            // TODO: else NOT FOUND handler
+            // NOT FOUND handler
+            return if (self.not_found) |nf|
+                nf(req.request)
+            else
+                .{ .status = .not_found };
         }
     };
 }
@@ -122,7 +135,7 @@ test "router for handler object" {
     }.user);
 
     var i: i32 = 3;
-    router.resolve(.{ .method = .GET, .path = "/foo", .request = &i });
+    _ = router.resolve(.{ .method = .GET, .path = "/foo", .request = &i });
 
     try std.testing.expectEqual(4, i);
 }
@@ -149,7 +162,7 @@ test "router for i32" {
     }.addOne);
 
     var i: i32 = 3;
-    router.resolve(.{ .method = .OPTIONS, .path = "/foo", .request = &i });
+    _ = router.resolve(.{ .method = .OPTIONS, .path = "/foo", .request = &i });
 
     try std.testing.expectEqual(4, i);
     try std.testing.expectEqual(5, app.value);
@@ -191,7 +204,7 @@ test "router std.http.Server.Request" {
         },
     };
 
-    router.resolve(.{ .method = .POST, .path = "/user/42", .request = &req });
+    _ = router.resolve(.{ .method = .POST, .path = "/user/42", .request = &req });
 
     // the user function set keep_alive = true
     try std.testing.expectEqual(true, req.head.keep_alive);
@@ -211,7 +224,7 @@ test "router for struct params" {
     }.get);
 
     var i: i32 = 3;
-    router.resolve(.{ .method = .GET, .path = "/foo/true", .request = &i });
+    _ = router.resolve(.{ .method = .GET, .path = "/foo/true", .request = &i });
 
     try std.testing.expectEqual(4, i);
 }
@@ -228,7 +241,7 @@ test "router for params" {
     }.addOne);
 
     var i: i32 = 3;
-    router.resolve(.{ .method = .POST, .path = "/foo/42", .request = &i });
+    _ = router.resolve(.{ .method = .POST, .path = "/foo/42", .request = &i });
 
     try std.testing.expectEqual(4, i);
 }
@@ -244,7 +257,7 @@ test "first Params, than request" {
     }.foo);
 
     var i: i32 = 3;
-    router.resolve(.{ .method = .GET, .path = "/foo/42", .request = &i });
+    _ = router.resolve(.{ .method = .GET, .path = "/foo/42", .request = &i });
 
     try std.testing.expectEqual(45, i);
 }
@@ -260,7 +273,7 @@ test "with query" {
     }.foo);
 
     var i: i32 = 3;
-    router.resolve(.{
+    _ = router.resolve(.{
         .method = .GET,
         .path = "/foo",
         .query = &[_]kv.KeyValue{.{ .key = "id", .value = "42" }},
@@ -283,7 +296,7 @@ test "with Q" {
     }.foo);
 
     var i: i32 = 3;
-    router.resolve(.{
+    _ = router.resolve(.{
         .method = .GET,
         .path = "/foo",
         .query = &[_]kv.KeyValue{.{ .key = "id", .value = "42" }},
@@ -311,7 +324,7 @@ test "with B" {
     }.foo);
 
     var i: i32 = 3;
-    router.resolve(.{ .method = .GET, .path = "/foo", .request = &i });
+    _ = router.resolve(.{ .method = .GET, .path = "/foo", .request = &i });
 
     try std.testing.expectEqual(45, i);
 }
@@ -335,7 +348,7 @@ test "with Body" {
     }.foo);
 
     var i: i32 = 3;
-    router.resolve(.{ .method = .GET, .path = "/foo", .request = &i });
+    _ = router.resolve(.{ .method = .GET, .path = "/foo", .request = &i });
 
     try std.testing.expectEqual(45, i);
 }
@@ -364,7 +377,34 @@ test "request with two args" {
     }.foo);
 
     var i: i32 = 3;
-    router.resolve(.{ .method = .GET, .path = "/foo", .request = .{ &i, true } });
+    _ = router.resolve(.{ .method = .GET, .path = "/foo", .request = .{ &i, true } });
 
     try std.testing.expectEqual(48, i);
+}
+
+test "not found" {
+    var router = Router(void, struct {}, null).init(std.testing.allocator, .{});
+    defer router.deinit();
+
+    const response = router.resolve(.{ .method = .GET, .path = "/not_found", .request = .{} });
+
+    try std.testing.expectEqual(.not_found, response.?.status);
+}
+
+test "bad request" {
+    var router = Router(void, struct {}, null).init(std.testing.allocator, .{});
+    defer router.deinit();
+
+    try router.get("/foo", struct {
+        fn foo() !void {
+            return error.BAD;
+        }
+    }.foo);
+
+    const response = router.resolve(.{ .method = .GET, .path = "/foo", .request = .{} });
+
+    const r = response.?;
+    try std.testing.expectEqual(.bad_request, r.status);
+    try std.testing.expectEqualStrings("ERROR in handler", r.content.?);
+    // std.debug.print("-- {s}\n", .{r.content.?});
 }
