@@ -52,7 +52,7 @@ pub fn Handler(App: type, Request: type) type {
     };
 }
 
-pub fn handlerFromFn(App: type, Request: type, func: anytype, decode: anytype) Handler(App, Request) {
+pub fn handlerFromFn(App: type, Request: type, func: anytype, DeEncoder: type) Handler(App, Request) {
     const meta = @typeInfo(@TypeOf(func));
     comptime var arg_types: [meta.@"fn".params.len]ArgType = undefined;
 
@@ -102,8 +102,8 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, decode: anytype) H
                     .params => Params{ .vars = params },
                     .q => |q| try FromVars(q.typ, query),
                     .query => Query{ .vars = query },
-                    .b => |b| try decode(b.typ, req, allocator),
-                    .body => try decode(std.json.Value, req, allocator),
+                    .b => |b| try DeEncoder.decode(b.typ, req, allocator),
+                    .body => try DeEncoder.decode(std.json.Value, req, allocator),
                     .fromRequest => |r| r.typ.fromRequest(req),
                 };
             }
@@ -114,7 +114,11 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, decode: anytype) H
                     _ = @call(.auto, func, args);
                     return null;
                 },
-                .strukt => return @call(.auto, func, args),
+                .strukt => {
+                    const b = @call(.auto, func, args);
+                    try DeEncoder.response(req, allocator, b);
+                    return .{};
+                },
                 .error_union => |eu| {
                     // mapping void to null (no Response available)
                     if (@typeInfo(eu.payload) == .void) {
@@ -245,6 +249,31 @@ test "handler with no args and error_union with void return" {
     const h = handlerFromFn(void, void, struct {
         fn foo() !void {}
     }.foo, void);
+
+    _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);
+}
+
+test "handler response with body" {
+    const User = struct { id: i32, name: []const u8 };
+
+    const h = handlerFromFn(
+        void,
+        void,
+        struct {
+            fn getUser() User {
+                return .{ .id = 42, .name = "its me" };
+            }
+        }.getUser,
+        struct {
+            fn response(_: void, allocator: std.mem.Allocator, u: User) !void {
+                const s = try std.json.stringifyAlloc(allocator, u, .{});
+                try std.testing.expectEqualStrings(
+                    \\{"id":42,"name":"its me"}
+                , s);
+                allocator.free(s);
+            }
+        },
+    );
 
     _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);
 }

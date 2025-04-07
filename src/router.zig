@@ -15,7 +15,7 @@ pub const Config = struct {
 /// signature for decodeFn: fn decode(T: type, req: Request, allocator: std.mem.Allocator) !T {
 /// where T)means a struct with a value field
 ///
-pub fn Router(App: type, Request: type, decodeFn: anytype) type {
+pub fn Router(App: type, Request: type, DeEncoder: type) type {
     const H = @import("request.zig").Handler(App, Request);
     const Tree = @import("tree.zig").Tree(H);
 
@@ -71,7 +71,7 @@ pub fn Router(App: type, Request: type, decodeFn: anytype) type {
                 App,
                 Request,
                 handlerFn,
-                decodeFn,
+                DeEncoder,
             );
             return try switch (method) {
                 .GET => self._get,
@@ -312,7 +312,7 @@ test "with B" {
         pub fn decode(T: type, _: *i32, _: std.mem.Allocator) !T {
             return B(Id){ .id = 42 };
         }
-    }.decode;
+    };
 
     var router = Router(void, *i32, decoder).init(std.testing.allocator, .{});
     defer router.deinit();
@@ -334,7 +334,7 @@ test "with Body" {
         pub fn decode(T: type, _: *i32, allocator: std.mem.Allocator) !T {
             return try std.json.parseFromSliceLeaky(T, allocator, "{\"id\": 42}", .{});
         }
-    }.decode;
+    };
 
     var router = Router(void, *i32, decoder).init(std.testing.allocator, .{});
     defer router.deinit();
@@ -360,7 +360,7 @@ test "request with two args" {
         pub fn decode(T: type, _: Req, allocator: std.mem.Allocator) !T {
             return try std.json.parseFromSliceLeaky(T, allocator, "{\"id\": 45}", .{});
         }
-    }.decode;
+    };
 
     var router = Router(void, Req, decoder).init(std.testing.allocator, .{});
     defer router.deinit();
@@ -383,7 +383,7 @@ test "request with two args" {
 }
 
 test "not found" {
-    var router = Router(void, struct {}, null).init(std.testing.allocator, .{});
+    var router = Router(void, struct {}, void).init(std.testing.allocator, .{});
     defer router.deinit();
 
     const response = router.resolve(.{ .method = .GET, .path = "/not_found", .request = .{} });
@@ -392,7 +392,7 @@ test "not found" {
 }
 
 test "bad request" {
-    var router = Router(void, struct {}, null).init(std.testing.allocator, .{});
+    var router = Router(void, struct {}, void).init(std.testing.allocator, .{});
     defer router.deinit();
 
     try router.get("/foo", struct {

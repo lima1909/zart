@@ -52,7 +52,7 @@ pub fn Server(comptime App: type) type {
             // std.debug.print("Received body: {s} | {d}\n", .{ body, body_len });
 
             var vars: [7]KeyValue = undefined;
-            r.resolve(onRequest(req, &vars));
+            _ = r.resolve(onRequest(req, &vars));
 
             // try req.respond("hello world\n", std.http.Server.Request.RespondOptions{});
             try req.respond("", std.http.Server.Request.RespondOptions{ .status = .ok });
@@ -83,7 +83,13 @@ pub const JsonBodyDecoder = struct {
 
         return try std.json.parseFromSliceLeaky(T, allocator, try reader.readAllAlloc(allocator, 10 * 1024), .{});
     }
-}.decode;
+
+    pub fn response(r: std.http.Server.Request, allocator: std.mem.Allocator, o: anytype) !void {
+        const json = try std.json.stringifyAlloc(allocator, o, .{});
+        var req = r;
+        try req.respond(json, .{});
+    }
+};
 
 // URL encode
 // const queryString = try allocator.dupe(u8, input);

@@ -25,7 +25,7 @@ const ID = struct { id: i32 };
 //
 // curl -X GET http://localhost:8080/user/42?foo=bar -d '{"id": 41}'
 //
-fn user(r: std.http.Server.Request, p: Params, q: Query, b: B(ID)) !void {
+fn user(r: std.http.Server.Request, p: Params, q: Query, b: B(ID)) ID {
     std.debug.print("Method: {}\n", .{r.head.method});
     if (p.value("id")) |v| {
         std.debug.print("- Param ID: {s}\n", .{v});
@@ -35,7 +35,8 @@ fn user(r: std.http.Server.Request, p: Params, q: Query, b: B(ID)) !void {
         std.debug.print("- Query Foo: {s} ({d})\n", .{ v, q.vars.len });
     }
 
-    std.debug.print("- Body ID: {d}\n", .{b.id});
+    // std.debug.print("- Body ID: {d}\n", .{b.id});
+    return .{ .id = b.id };
 }
 
 //
