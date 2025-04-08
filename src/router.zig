@@ -2,7 +2,6 @@ const std = @import("std");
 
 const handlerFromFn = @import("request.zig").handlerFromFn;
 const OnRequest = @import("request.zig").OnRequest;
-const Response = @import("request.zig").Response;
 
 const TreeConfig = @import("tree.zig").Config;
 const kv = @import("kv.zig");
@@ -13,7 +12,7 @@ pub const Config = struct {
 
 ///
 /// signature for decodeFn: fn decode(T: type, req: Request, allocator: std.mem.Allocator) !T {
-/// where T)means a struct with a value field
+/// where T means a struct with a value field
 ///
 pub fn Router(App: type, Request: type, DeEncoder: type) type {
     const H = @import("request.zig").Handler(App, Request);
@@ -30,9 +29,9 @@ pub fn Router(App: type, Request: type, DeEncoder: type) type {
         _other: Tree,
 
         // error_handler
-        error_handler: ?*const fn (Request) Response = null,
+        // error_handler: ?*const fn (Request) Response = null,
         // not_found_handler
-        not_found: ?*const fn (Request) Response = null,
+        // not_found: ?*const fn (Request) Response = null,
 
         allocator: std.mem.Allocator,
 
@@ -80,7 +79,7 @@ pub fn Router(App: type, Request: type, DeEncoder: type) type {
             }.insert(path, handler);
         }
 
-        pub fn resolve(self: *const Self, req: OnRequest(Request)) ?Response {
+        pub fn resolve(self: *const Self, req: OnRequest(Request)) void {
             const matched = switch (req.method) {
                 .GET => self._get,
                 .POST => self._post,
@@ -93,23 +92,27 @@ pub fn Router(App: type, Request: type, DeEncoder: type) type {
                 var arena = std.heap.ArenaAllocator.init(self.allocator);
                 defer arena.deinit();
 
-                return handler.handle(self._app, req.request, req.query, &matched.kvs, arena.allocator()) catch |err| {
+                handler.handle(self._app, req.request, req.query, &matched.kvs, arena.allocator()) catch |err| {
                     // handle error
-                    if (self.error_handler) |eh| {
-                        return eh(req.request);
-                    }
+                    // if (self.error_handler) |eh| {
+                    //     return eh(req.request);
+                    // }
 
                     var buffer: [50]u8 = undefined;
                     _ = std.fmt.bufPrint(&buffer, "{s}{any}", .{ "ERROR in handler: ", err }) catch "ERROR in handler";
-                    return .{ .status = .bad_request, .content = "ERROR in handler" };
+                    // return .{ .status = .bad_request, .content = "ERROR in handler" };
+                    std.debug.print("error by execute handler: {any}\n", .{err});
                 };
+                return;
             }
 
             // NOT FOUND handler
-            return if (self.not_found) |nf|
-                nf(req.request)
-            else
-                .{ .status = .not_found };
+            // return if (self.not_found) |nf|
+            //     nf(req.request)
+            // else
+            //     .{ .status = .not_found };
+
+            std.debug.print("error not found: {s}\n", .{req.path});
         }
     };
 }
@@ -382,29 +385,29 @@ test "request with two args" {
     try std.testing.expectEqual(48, i);
 }
 
-test "not found" {
-    var router = Router(void, struct {}, void).init(std.testing.allocator, .{});
-    defer router.deinit();
-
-    const response = router.resolve(.{ .method = .GET, .path = "/not_found", .request = .{} });
-
-    try std.testing.expectEqual(.not_found, response.?.status);
-}
-
-test "bad request" {
-    var router = Router(void, struct {}, void).init(std.testing.allocator, .{});
-    defer router.deinit();
-
-    try router.get("/foo", struct {
-        fn foo() !void {
-            return error.BAD;
-        }
-    }.foo);
-
-    const response = router.resolve(.{ .method = .GET, .path = "/foo", .request = .{} });
-
-    const r = response.?;
-    try std.testing.expectEqual(.bad_request, r.status);
-    try std.testing.expectEqualStrings("ERROR in handler", r.content.?);
-    // std.debug.print("-- {s}\n", .{r.content.?});
-}
+// test "not found" {
+//     var router = Router(void, struct {}, void).init(std.testing.allocator, .{});
+//     defer router.deinit();
+//
+//     const response = router.resolve(.{ .method = .GET, .path = "/not_found", .request = .{} });
+//
+//     try std.testing.expectEqual(.not_found, response.?.status);
+// }
+//
+// test "bad request" {
+//     var router = Router(void, struct {}, void).init(std.testing.allocator, .{});
+//     defer router.deinit();
+//
+//     try router.get("/foo", struct {
+//         fn foo() !void {
+//             return error.BAD;
+//         }
+//     }.foo);
+//
+//     const response = router.resolve(.{ .method = .GET, .path = "/foo", .request = .{} });
+//
+//     const r = response.?;
+//     try std.testing.expectEqual(.bad_request, r.status);
+//     try std.testing.expectEqualStrings("ERROR in handler", r.content.?);
+//     // std.debug.print("-- {s}\n", .{r.content.?});
+// }

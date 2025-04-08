@@ -15,11 +15,6 @@ pub fn OnRequest(Request: type) type {
     };
 }
 
-pub const Response = struct {
-    content: ?[]const u8 = null,
-    status: std.http.Status = .ok,
-};
-
 /// ArgTypes of handler Args (parts of an request)
 const ArgType = union(enum) {
     app,
@@ -48,7 +43,7 @@ const ReturnType = union(enum) {
 //
 pub fn Handler(App: type, Request: type) type {
     return struct {
-        handle: *const fn (app: ?App, req: Request, query: []const KeyValue, params: []const KeyValue, allocator: std.mem.Allocator) anyerror!?Response,
+        handle: *const fn (app: ?App, req: Request, query: []const KeyValue, params: []const KeyValue, allocator: std.mem.Allocator) anyerror!void,
     };
 }
 
@@ -81,16 +76,16 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, DeEncoder: type) H
     // check the return type
     const return_type: ReturnType = if (meta.@"fn".return_type) |ty|
         switch (@typeInfo(ty)) {
-            .error_union => |err| ReturnType{ .error_union = err },
             .void => .none,
             .@"struct" => .strukt,
+            .error_union => |err| ReturnType{ .error_union = err },
             else => @compileError("Not supported return type: " ++ @typeName(ty)),
         }
     else
         @compileError("Not supported return type found");
 
     const h = struct {
-        fn handle(app: ?App, req: Request, query: []const KeyValue, params: []const KeyValue, allocator: std.mem.Allocator) !?Response {
+        fn handle(app: ?App, req: Request, query: []const KeyValue, params: []const KeyValue, allocator: std.mem.Allocator) !void {
             const Args = std.meta.ArgsTuple(@TypeOf(func));
             var args: Args = undefined;
 
@@ -109,21 +104,14 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, DeEncoder: type) H
             }
 
             switch (return_type) {
-                .none => {
-                    // mapping void to null (no Response available)
-                    _ = @call(.auto, func, args);
-                    return null;
-                },
+                .none => return @call(.auto, func, args),
                 .strukt => {
                     const b = @call(.auto, func, args);
                     try DeEncoder.response(req, allocator, b);
-                    return .{};
                 },
                 .error_union => |eu| {
-                    // mapping void to null (no Response available)
                     if (@typeInfo(eu.payload) == .void) {
-                        _ = try @call(.auto, func, args);
-                        return null;
+                        return try @call(.auto, func, args);
                     }
                     return @call(.auto, func, args);
                 },
