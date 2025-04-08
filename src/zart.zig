@@ -2,9 +2,9 @@ pub const vars = @import("./kv.zig");
 pub const tree = @import("./tree.zig");
 
 test {
+    _ = @import("./handler.zig");
     _ = @import("./kv.zig");
     _ = @import("./node.zig");
-    _ = @import("./request.zig");
     _ = @import("./router.zig");
     _ = @import("./tree.zig");
 

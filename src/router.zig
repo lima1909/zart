@@ -1,8 +1,5 @@
 const std = @import("std");
 
-const handlerFromFn = @import("request.zig").handlerFromFn;
-const OnRequest = @import("request.zig").OnRequest;
-
 const TreeConfig = @import("tree.zig").Config;
 const kv = @import("kv.zig");
 
@@ -15,7 +12,7 @@ pub const Config = struct {
 /// where T means a struct with a value field
 ///
 pub fn Router(App: type, Request: type, DeEncoder: type) type {
-    const H = @import("request.zig").Handler(App, Request);
+    const H = @import("handler.zig").Handler(App, Request);
     const Tree = @import("tree.zig").Tree(H);
 
     return struct {
@@ -66,7 +63,7 @@ pub fn Router(App: type, Request: type, DeEncoder: type) type {
         }
 
         pub inline fn addPath(self: *Self, method: std.http.Method, path: []const u8, handlerFn: anytype) !void {
-            const handler = handlerFromFn(
+            const handler = @import("handler.zig").handlerFromFn(
                 App,
                 Request,
                 handlerFn,
@@ -79,12 +76,12 @@ pub fn Router(App: type, Request: type, DeEncoder: type) type {
             }.insert(path, handler);
         }
 
-        pub fn resolve(self: *const Self, req: OnRequest(Request)) void {
-            const matched = switch (req.method) {
+        pub fn resolve(self: *const Self, method: std.http.Method, path: []const u8, req: Request, query: []const kv.KeyValue) void {
+            const matched = switch (method) {
                 .GET => self._get,
                 .POST => self._post,
                 else => self._other,
-            }.resolve(req.path);
+            }.resolve(path);
 
             if (matched.value) |handler| {
 
@@ -92,7 +89,7 @@ pub fn Router(App: type, Request: type, DeEncoder: type) type {
                 var arena = std.heap.ArenaAllocator.init(self.allocator);
                 defer arena.deinit();
 
-                handler.handle(self._app, req.request, req.query, &matched.kvs, arena.allocator()) catch |err| {
+                handler.handle(self._app, req, query, &matched.kvs, arena.allocator()) catch |err| {
                     // handle error
                     // if (self.error_handler) |eh| {
                     //     return eh(req.request);
@@ -112,7 +109,7 @@ pub fn Router(App: type, Request: type, DeEncoder: type) type {
             // else
             //     .{ .status = .not_found };
 
-            std.debug.print("error not found: {s}\n", .{req.path});
+            std.debug.print("error not found: {s}\n", .{path});
         }
     };
 }
@@ -138,17 +135,18 @@ test "router for handler object" {
     }.user);
 
     var i: i32 = 3;
-    _ = router.resolve(.{ .method = .GET, .path = "/foo", .request = &i });
+    _ = router.resolve(.GET, "/foo", &i, &[_]kv.KeyValue{});
 
     try std.testing.expectEqual(4, i);
 }
 
-const P = @import("request.zig").P;
-const Q = @import("request.zig").Q;
-const B = @import("request.zig").B;
-const Params = @import("request.zig").Params;
-const Query = @import("request.zig").Query;
-const Body = @import("request.zig").Body;
+const request = @import("handler.zig");
+const P = request.P;
+const Q = request.Q;
+const B = request.B;
+const Params = request.Params;
+const Query = request.Query;
+const Body = request.Body;
 
 test "router for i32" {
     const App = struct { value: i32 };
@@ -165,7 +163,7 @@ test "router for i32" {
     }.addOne);
 
     var i: i32 = 3;
-    _ = router.resolve(.{ .method = .OPTIONS, .path = "/foo", .request = &i });
+    _ = router.resolve(.OPTIONS, "/foo", &i, &[_]kv.KeyValue{});
 
     try std.testing.expectEqual(4, i);
     try std.testing.expectEqual(5, app.value);
@@ -207,7 +205,7 @@ test "router std.http.Server.Request" {
         },
     };
 
-    _ = router.resolve(.{ .method = .POST, .path = "/user/42", .request = &req });
+    _ = router.resolve(.POST, "/user/42", &req, &[_]kv.KeyValue{});
 
     // the user function set keep_alive = true
     try std.testing.expectEqual(true, req.head.keep_alive);
@@ -227,7 +225,7 @@ test "router for struct params" {
     }.get);
 
     var i: i32 = 3;
-    _ = router.resolve(.{ .method = .GET, .path = "/foo/true", .request = &i });
+    _ = router.resolve(.GET, "/foo/true", &i, &[_]kv.KeyValue{});
 
     try std.testing.expectEqual(4, i);
 }
@@ -244,7 +242,7 @@ test "router for params" {
     }.addOne);
 
     var i: i32 = 3;
-    _ = router.resolve(.{ .method = .POST, .path = "/foo/42", .request = &i });
+    _ = router.resolve(.POST, "/foo/42", &i, &[_]kv.KeyValue{});
 
     try std.testing.expectEqual(4, i);
 }
@@ -260,7 +258,7 @@ test "first Params, than request" {
     }.foo);
 
     var i: i32 = 3;
-    _ = router.resolve(.{ .method = .GET, .path = "/foo/42", .request = &i });
+    _ = router.resolve(.GET, "/foo/42", &i, &[_]kv.KeyValue{});
 
     try std.testing.expectEqual(45, i);
 }
@@ -276,12 +274,7 @@ test "with query" {
     }.foo);
 
     var i: i32 = 3;
-    _ = router.resolve(.{
-        .method = .GET,
-        .path = "/foo",
-        .query = &[_]kv.KeyValue{.{ .key = "id", .value = "42" }},
-        .request = &i,
-    });
+    _ = router.resolve(.GET, "/foo", &i, &[_]kv.KeyValue{.{ .key = "id", .value = "42" }});
 
     try std.testing.expectEqual(45, i);
 }
@@ -299,12 +292,7 @@ test "with Q" {
     }.foo);
 
     var i: i32 = 3;
-    _ = router.resolve(.{
-        .method = .GET,
-        .path = "/foo",
-        .query = &[_]kv.KeyValue{.{ .key = "id", .value = "42" }},
-        .request = &i,
-    });
+    _ = router.resolve(.GET, "/foo", &i, &[_]kv.KeyValue{.{ .key = "id", .value = "42" }});
 
     try std.testing.expectEqual(45, i);
 }
@@ -327,7 +315,7 @@ test "with B" {
     }.foo);
 
     var i: i32 = 3;
-    _ = router.resolve(.{ .method = .GET, .path = "/foo", .request = &i });
+    _ = router.resolve(.GET, "/foo", &i, &[_]kv.KeyValue{});
 
     try std.testing.expectEqual(45, i);
 }
@@ -351,7 +339,7 @@ test "with Body" {
     }.foo);
 
     var i: i32 = 3;
-    _ = router.resolve(.{ .method = .GET, .path = "/foo", .request = &i });
+    _ = router.resolve(.GET, "/foo", &i, &[_]kv.KeyValue{});
 
     try std.testing.expectEqual(45, i);
 }
@@ -380,7 +368,7 @@ test "request with two args" {
     }.foo);
 
     var i: i32 = 3;
-    _ = router.resolve(.{ .method = .GET, .path = "/foo", .request = .{ &i, true } });
+    _ = router.resolve(.GET, "/foo", .{ &i, true }, &[_]kv.KeyValue{});
 
     try std.testing.expectEqual(48, i);
 }

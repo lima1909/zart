@@ -1,10 +1,12 @@
 const std = @import("std");
 
+const request = @import("handler.zig");
+const Params = request.Params;
+const Query = request.Query;
+const B = request.B;
+const Body = request.Body;
+
 const Server = @import("server.zig").Server;
-const Params = @import("request.zig").Params;
-const Query = @import("request.zig").Query;
-const B = @import("request.zig").B;
-const Body = @import("request.zig").Body;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};

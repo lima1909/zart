@@ -3,18 +3,6 @@ const std = @import("std");
 const KeyValue = @import("kv.zig").KeyValue;
 const KeyValues = @import("kv.zig").KeyValues;
 
-/// Is created by every Request.
-pub fn OnRequest(Request: type) type {
-    return struct {
-        method: std.http.Method,
-        path: []const u8,
-        query: []const KeyValue = &[_]KeyValue{},
-
-        // the original Request
-        request: Request,
-    };
-}
-
 /// ArgTypes of handler Args (parts of an request)
 const ArgType = union(enum) {
     app,
@@ -91,7 +79,7 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, DeEncoder: type) H
 
             inline for (0..arg_types.len) |i| {
                 args[i] = switch (arg_types[i]) {
-                    .app => app.?,
+                    .app => if (app) |a| a else return error.NoApp,
                     .request => req,
                     .p => |p| try FromVars(p.typ, params),
                     .params => Params{ .vars = params },
