@@ -1,4 +1,5 @@
 const std = @import("std");
+const http = std.http;
 
 const KeyValue = @import("kv.zig").KeyValue;
 const KeyValues = @import("kv.zig").KeyValues;
@@ -18,10 +19,27 @@ const ArgType = union(enum) {
 
 /// ReturnTypes of handler returns
 const ReturnType = union(enum) {
-    none,
-    strukt,
+    none, // void
+    strukt: type,
+    static_string,
     error_union: std.builtin.Type.ErrorUnion,
 };
+
+// Content is the Body-Content
+pub fn Content(S: type) type {
+    return union(enum) {
+        string: []const u8,
+        strukt: S,
+    };
+}
+
+// The response with Content (Body)
+pub fn Response(S: type) type {
+    return struct {
+        status: http.Status = .ok,
+        content: ?Content(S) = null,
+    };
+}
 
 // Examples for Handler function signatures:
 //   - fn (req: Request)
@@ -35,7 +53,7 @@ pub fn Handler(App: type, Request: type) type {
     };
 }
 
-pub fn handlerFromFn(App: type, Request: type, func: anytype, DeEncoder: type) Handler(App, Request) {
+pub fn handlerFromFn(App: type, Request: type, func: anytype, Extractor: type) Handler(App, Request) {
     const meta = @typeInfo(@TypeOf(func));
     comptime var arg_types: [meta.@"fn".params.len]ArgType = undefined;
 
@@ -65,7 +83,8 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, DeEncoder: type) H
     const return_type: ReturnType = if (meta.@"fn".return_type) |ty|
         switch (@typeInfo(ty)) {
             .void => .none,
-            .@"struct" => .strukt,
+            .@"struct" => ReturnType{ .strukt = ty },
+            .pointer => |p| if (p.child == u8) .static_string else @compileError("Not supported return type pointer: " ++ @typeName(ty)),
             .error_union => |err| ReturnType{ .error_union = err },
             else => @compileError("Not supported return type: " ++ @typeName(ty)),
         }
@@ -77,6 +96,7 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, DeEncoder: type) H
             const Args = std.meta.ArgsTuple(@TypeOf(func));
             var args: Args = undefined;
 
+            // create arg-values
             inline for (0..arg_types.len) |i| {
                 args[i] = switch (arg_types[i]) {
                     .app => if (app) |a| a else return error.NoApp,
@@ -85,17 +105,25 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, DeEncoder: type) H
                     .params => Params{ .vars = params },
                     .q => |q| try FromVars(q.typ, query),
                     .query => Query{ .vars = query },
-                    .b => |b| try DeEncoder.decode(b.typ, req, allocator),
-                    .body => try DeEncoder.decode(std.json.Value, req, allocator),
+                    .b => |b| try Extractor.body(b.typ, allocator, req),
+                    .body => try Extractor.body(std.json.Value, allocator, req),
                     .fromRequest => |r| r.typ.fromRequest(req),
                 };
             }
 
+            // execute handlerFn and work with result
             switch (return_type) {
                 .none => return @call(.auto, func, args),
-                .strukt => {
+                .strukt => |ty| {
                     const b = @call(.auto, func, args);
-                    try DeEncoder.response(req, allocator, b);
+                    // const c = Content(@TypeOf(b)){ .strukt = b };
+                    try Extractor.response(ty, allocator, Response(@TypeOf(b)){ .content = .{ .strukt = b } }, req);
+                },
+                .static_string => {
+                    const s = @call(.auto, func, args);
+                    // const c = Content([]const u8){ .string = s };
+                    try Extractor.response([]const u8, allocator, Response([]const u8){ .content = .{ .string = s } }, req);
+                    return;
                 },
                 .error_union => |eu| {
                     if (@typeInfo(eu.payload) == .void) {
@@ -241,12 +269,34 @@ test "handler response with body" {
             }
         }.getUser,
         struct {
-            fn response(_: void, allocator: std.mem.Allocator, u: User) !void {
-                const s = try std.json.stringifyAlloc(allocator, u, .{});
+            fn response(T: type, allocator: std.mem.Allocator, resp: Response(T), _: void) !void {
+                const s = try std.json.stringifyAlloc(allocator, resp.content.?.strukt, .{});
+                defer allocator.free(s);
+
                 try std.testing.expectEqualStrings(
                     \\{"id":42,"name":"its me"}
                 , s);
-                allocator.free(s);
+                try std.testing.expectEqual(.ok, resp.status);
+            }
+        },
+    );
+
+    _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);
+}
+
+test "handle static string" {
+    const h = handlerFromFn(
+        void,
+        void,
+        struct {
+            fn string() []const u8 {
+                return "its me";
+            }
+        }.string,
+        struct {
+            fn response(T: type, _: std.mem.Allocator, resp: Response(T), _: void) !void {
+                try std.testing.expectEqualStrings("its me", resp.content.?.string);
+                try std.testing.expectEqual(.ok, resp.status);
             }
         },
     );

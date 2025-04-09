@@ -1,7 +1,8 @@
 const std = @import("std");
-const http = @import("std").http;
+const http = std.http;
 
 const KeyValue = @import("kv.zig").KeyValue;
+const Response = @import("handler.zig").Response;
 
 pub fn Server(comptime App: type) type {
     const Router = @import("router.zig").Router(App, http.Server.Request, JsonBodyDecoder);
@@ -39,7 +40,7 @@ pub fn Server(comptime App: type) type {
             defer conn.stream.close();
 
             var buffer: [4096]u8 = undefined;
-            var http_server = std.http.Server.init(conn, &buffer);
+            var http_server = http.Server.init(conn, &buffer);
             var req = try http_server.receiveHead();
 
             const target = req.head.target;
@@ -52,23 +53,30 @@ pub fn Server(comptime App: type) type {
 
             r.resolve(req.head.method, path, req, vars[0..size]);
             // if no response defined, than is simple status .ok returned
-            try req.respond("", std.http.Server.Request.RespondOptions{ .status = .ok });
+            try req.respond("", http.Server.Request.RespondOptions{ .status = .ok });
         }
     };
 }
 
 pub const JsonBodyDecoder = struct {
-    pub fn decode(T: type, r: std.http.Server.Request, allocator: std.mem.Allocator) !T {
+    pub fn body(T: type, allocator: std.mem.Allocator, r: http.Server.Request) !T {
         var req = r;
         const reader = try req.reader();
 
         return try std.json.parseFromSliceLeaky(T, allocator, try reader.readAllAlloc(allocator, 10 * 1024), .{});
     }
 
-    pub fn response(r: std.http.Server.Request, allocator: std.mem.Allocator, o: anytype) !void {
-        const json = try std.json.stringifyAlloc(allocator, o, .{});
+    pub fn response(T: type, allocator: std.mem.Allocator, resp: Response(T), r: http.Server.Request) !void {
+        const content = if (resp.content) |c|
+            switch (c) {
+                .strukt => |s| try std.json.stringifyAlloc(allocator, s, .{}),
+                .string => |s| s,
+            }
+        else
+            "";
+
         var req = r;
-        try req.respond(json, .{});
+        try req.respond(content, .{ .status = resp.status });
     }
 };
 

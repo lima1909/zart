@@ -1,6 +1,8 @@
 const std = @import("std");
 
 const TreeConfig = @import("tree.zig").Config;
+const Response = @import("handler.zig").Response;
+
 const kv = @import("kv.zig");
 
 pub const Config = struct {
@@ -8,10 +10,12 @@ pub const Config = struct {
 };
 
 ///
-/// signature for decodeFn: fn decode(T: type, req: Request, allocator: std.mem.Allocator) !T {
-/// where T means a struct with a value field
+/// Signature for Extractor:
+///   pub fn body(T: type, allocator: std.mem.Allocator, r: Request) !T
+///   pub fn response(T: type, allocator: std.mem.Allocator, resp: Response(T), r: Request) !void
+/// where T means a struct (the Body)
 ///
-pub fn Router(App: type, Request: type, DeEncoder: type) type {
+pub fn Router(App: type, Request: type, Extractor: type) type {
     const H = @import("handler.zig").Handler(App, Request);
     const Tree = @import("tree.zig").Tree(H);
 
@@ -55,19 +59,19 @@ pub fn Router(App: type, Request: type, DeEncoder: type) type {
         }
 
         pub fn get(self: *Self, path: []const u8, handlerFn: anytype) !void {
-            try self.addPath(.GET, path, handlerFn);
+            try self.route(.GET, path, handlerFn);
         }
 
         pub fn post(self: *Self, path: []const u8, handlerFn: anytype) !void {
-            try self.addPath(.POST, path, handlerFn);
+            try self.route(.POST, path, handlerFn);
         }
 
-        pub inline fn addPath(self: *Self, method: std.http.Method, path: []const u8, handlerFn: anytype) !void {
+        pub inline fn route(self: *Self, method: std.http.Method, path: []const u8, handlerFn: anytype) !void {
             const handler = @import("handler.zig").handlerFromFn(
                 App,
                 Request,
                 handlerFn,
-                DeEncoder,
+                Extractor,
             );
             return try switch (method) {
                 .GET => self._get,
@@ -155,7 +159,7 @@ test "router for i32" {
     var router = Router(*App, *i32, void).initWithApp(std.testing.allocator, &app, .{});
     defer router.deinit();
 
-    try router.addPath(.HEAD, "/foo", struct {
+    try router.route(.HEAD, "/foo", struct {
         fn addOne(a: *App, i: *i32, _: Params) anyerror!void {
             a.value = i.* + 2;
             i.* += 1;
@@ -217,7 +221,7 @@ test "router for struct params" {
 
     const Ok = struct { ok: bool };
 
-    try router.addPath(.GET, "/foo/:ok", struct {
+    try router.route(.GET, "/foo/:ok", struct {
         fn get(i: *i32, p: P(Ok)) anyerror!void {
             i.* += 1;
             try std.testing.expectEqual(true, p.ok);
@@ -234,7 +238,7 @@ test "router for params" {
     var router = Router(void, *i32, void).init(std.testing.allocator, .{});
     defer router.deinit();
 
-    try router.addPath(.POST, "/foo/:id", struct {
+    try router.route(.POST, "/foo/:id", struct {
         fn addOne(i: *i32, p: Params) anyerror!void {
             i.* += 1;
             try std.testing.expectEqual(42, p.valueAs(i32, "id"));
@@ -299,13 +303,13 @@ test "with Q" {
 
 test "with B" {
     const Id = struct { id: i32 };
-    const decoder = struct {
-        pub fn decode(T: type, _: *i32, _: std.mem.Allocator) !T {
+    const extract = struct {
+        pub fn body(T: type, _: std.mem.Allocator, _: *i32) !T {
             return B(Id){ .id = 42 };
         }
     };
 
-    var router = Router(void, *i32, decoder).init(std.testing.allocator, .{});
+    var router = Router(void, *i32, extract).init(std.testing.allocator, .{});
     defer router.deinit();
 
     try router.get("/foo", struct {
@@ -321,13 +325,13 @@ test "with B" {
 }
 
 test "with Body" {
-    const decoder = struct {
-        pub fn decode(T: type, _: *i32, allocator: std.mem.Allocator) !T {
+    const extract = struct {
+        pub fn body(T: type, allocator: std.mem.Allocator, _: *i32) !T {
             return try std.json.parseFromSliceLeaky(T, allocator, "{\"id\": 42}", .{});
         }
     };
 
-    var router = Router(void, *i32, decoder).init(std.testing.allocator, .{});
+    var router = Router(void, *i32, extract).init(std.testing.allocator, .{});
     defer router.deinit();
 
     try router.get("/foo", struct {
@@ -347,13 +351,13 @@ test "with Body" {
 test "request with two args" {
     const Req = struct { *i32, bool };
 
-    const decoder = struct {
-        pub fn decode(T: type, _: Req, allocator: std.mem.Allocator) !T {
+    const extract = struct {
+        pub fn body(T: type, allocator: std.mem.Allocator, _: Req) !T {
             return try std.json.parseFromSliceLeaky(T, allocator, "{\"id\": 45}", .{});
         }
     };
 
-    var router = Router(void, Req, decoder).init(std.testing.allocator, .{});
+    var router = Router(void, Req, extract).init(std.testing.allocator, .{});
     defer router.deinit();
 
     try router.get("/foo", struct {
