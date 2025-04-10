@@ -14,9 +14,10 @@ pub fn Server(comptime App: type) type {
         _server: ?std.net.Server = undefined,
 
         pub fn init(allocator: std.mem.Allocator) Self {
-            return .{
-                ._router = Router.init(allocator, .{}),
-            };
+            var r = Router.init(allocator, .{});
+            r.error_handler = ErrorHandler.handleError;
+
+            return .{ ._router = r };
         }
 
         pub fn deinit(self: *Self) void {
@@ -77,6 +78,23 @@ pub const JsonBodyDecoder = struct {
 
         var req = r;
         try req.respond(content, .{ .status = resp.status });
+    }
+};
+
+const ErrorHandler = struct {
+    fn handleError(r: http.Server.Request, resp: Response([]u8)) void {
+        const content = if (resp.content != null)
+            switch (resp.content.?) {
+                .string => |s| s,
+                .strukt => "could not send struct content",
+            }
+        else
+            "";
+
+        var req = r;
+        req.respond(content, .{ .status = resp.status }) catch |err| {
+            std.debug.print("error by sending the response: {} ({s})\n", .{ err, @tagName(resp.status) });
+        };
     }
 };
 

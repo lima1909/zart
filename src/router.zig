@@ -1,7 +1,9 @@
 const std = @import("std");
 
 const TreeConfig = @import("tree.zig").Config;
+
 const Response = @import("handler.zig").Response;
+const Content = @import("handler.zig").Content;
 
 const kv = @import("kv.zig");
 
@@ -19,22 +21,31 @@ pub fn Router(App: type, Request: type, Extractor: type) type {
     const H = @import("handler.zig").Handler(App, Request);
     const Tree = @import("tree.zig").Tree(H);
 
+    const defaultErrorHandler = struct {
+        fn handleError(_: Request, resp: Response([]u8)) void {
+            const status = @tagName(resp.status);
+
+            if (resp.content) |c| {
+                switch (c) {
+                    .string => |s| std.debug.print("error: {s} ({s})\n", .{ s, status }),
+                    .strukt => |s| std.debug.print("error: {any} ({s})\n", .{ s, status }),
+                }
+            } else std.debug.print("error {s}\n", .{status});
+        }
+    }.handleError;
+
     return struct {
         const Self = @This();
 
         _app: ?App,
+        allocator: std.mem.Allocator,
 
         // methods
         _get: Tree,
         _post: Tree,
         _other: Tree,
 
-        // error_handler
-        // error_handler: ?*const fn (Request) Response = null,
-        // not_found_handler
-        // not_found: ?*const fn (Request) Response = null,
-
-        allocator: std.mem.Allocator,
+        error_handler: *const fn (Request, Response([]u8)) void = defaultErrorHandler,
 
         pub fn init(allocator: std.mem.Allocator, cfg: Config) Self {
             return initWithApp(allocator, undefined, cfg);
@@ -94,26 +105,23 @@ pub fn Router(App: type, Request: type, Extractor: type) type {
                 defer arena.deinit();
 
                 handler.handle(self._app, req, query, &matched.kvs, arena.allocator()) catch |err| {
-                    // handle error
-                    // if (self.error_handler) |eh| {
-                    //     return eh(req.request);
-                    // }
-
+                    // BAD REQUEST handler
                     var buffer: [50]u8 = undefined;
-                    _ = std.fmt.bufPrint(&buffer, "{s}{any}", .{ "ERROR in handler: ", err }) catch "ERROR in handler";
-                    // return .{ .status = .bad_request, .content = "ERROR in handler" };
-                    std.debug.print("error by execute handler: {any}\n", .{err});
+                    const error_msg = std.fmt.bufPrint(&buffer, "{s}{}", .{ "400 Bad Request: ", err }) catch "400 Bad Request";
+
+                    self.error_handler(req, Response([]u8){
+                        .status = .bad_request,
+                        .content = .{ .string = error_msg },
+                    });
                 };
                 return;
             }
 
             // NOT FOUND handler
-            // return if (self.not_found) |nf|
-            //     nf(req.request)
-            // else
-            //     .{ .status = .not_found };
-
-            std.debug.print("error not found: {s}\n", .{path});
+            self.error_handler(req, Response([]u8){
+                .status = .not_found,
+                .content = .{ .string = "404 Not Found" },
+            });
         }
     };
 }
@@ -377,29 +385,51 @@ test "request with two args" {
     try std.testing.expectEqual(48, i);
 }
 
-// test "not found" {
-//     var router = Router(void, struct {}, void).init(std.testing.allocator, .{});
-//     defer router.deinit();
-//
-//     const response = router.resolve(.{ .method = .GET, .path = "/not_found", .request = .{} });
-//
-//     try std.testing.expectEqual(.not_found, response.?.status);
-// }
-//
-// test "bad request" {
-//     var router = Router(void, struct {}, void).init(std.testing.allocator, .{});
-//     defer router.deinit();
-//
-//     try router.get("/foo", struct {
-//         fn foo() !void {
-//             return error.BAD;
-//         }
-//     }.foo);
-//
-//     const response = router.resolve(.{ .method = .GET, .path = "/foo", .request = .{} });
-//
-//     const r = response.?;
-//     try std.testing.expectEqual(.bad_request, r.status);
-//     try std.testing.expectEqualStrings("ERROR in handler", r.content.?);
-//     // std.debug.print("-- {s}\n", .{r.content.?});
-// }
+test "not found" {
+    const NotFound = struct { resp: ?Response([]u8) = null };
+
+    var router = Router(void, *NotFound, void).init(std.testing.allocator, .{});
+    defer router.deinit();
+
+    router.error_handler = struct {
+        fn handleError(req: *NotFound, resp: Response([]u8)) void {
+            req.resp = resp;
+        }
+    }.handleError;
+
+    var notFound = NotFound{};
+    router.resolve(.GET, "/not_found", &notFound, &[_]kv.KeyValue{});
+
+    try std.testing.expectEqual(.not_found, notFound.resp.?.status);
+    try std.testing.expectEqualStrings("404 Not Found", notFound.resp.?.content.?.string);
+}
+
+test "bad request" {
+    const BadRequest = struct {
+        resp: ?Response([]u8) = null,
+        was_called: bool = false,
+    };
+
+    var router = Router(void, *BadRequest, void).init(std.testing.allocator, .{});
+    defer router.deinit();
+
+    router.error_handler = struct {
+        fn handleError(req: *BadRequest, resp: Response([]u8)) void {
+            std.testing.expectEqualStrings("400 Bad Request: error.BAD", resp.content.?.string) catch @panic("test failed");
+            req.resp = resp;
+            req.was_called = true;
+        }
+    }.handleError;
+
+    try router.get("/foo", struct {
+        fn foo() !void {
+            return error.BAD;
+        }
+    }.foo);
+
+    var badRequest = BadRequest{};
+    router.resolve(.GET, "/foo", &badRequest, &[_]kv.KeyValue{});
+
+    try std.testing.expectEqual(.bad_request, badRequest.resp.?.status);
+    try std.testing.expectEqual(true, badRequest.was_called);
+}
