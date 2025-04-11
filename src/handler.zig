@@ -22,6 +22,7 @@ const ReturnType = union(enum) {
     none, // void
     strukt: type,
     static_string,
+    response: type,
     error_union: std.builtin.Type.ErrorUnion,
 };
 
@@ -30,6 +31,8 @@ pub fn Content(S: type) type {
     return union(enum) {
         string: []const u8,
         strukt: S,
+
+        const default: Content(S) = .{ .string = "" };
     };
 }
 
@@ -37,7 +40,9 @@ pub fn Content(S: type) type {
 pub fn Response(S: type) type {
     return struct {
         status: http.Status = .ok,
-        content: Content(S) = .{ .string = "" },
+        content: Content(S) = .default,
+
+        _contentType: S = undefined,
     };
 }
 
@@ -83,8 +88,16 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, Extractor: type) H
     const return_type: ReturnType = if (meta.@"fn".return_type) |ty|
         switch (@typeInfo(ty)) {
             .void => .none,
-            .@"struct" => ReturnType{ .strukt = ty },
-            .pointer => |p| if (p.child == u8) .static_string else @compileError("Not supported return type pointer: " ++ @typeName(ty)),
+
+            // Response or struct
+            .@"struct" => if (@hasField(ty, "_contentType"))
+                ReturnType{ .response = @FieldType(ty, "_contentType") }
+            else
+                ReturnType{ .strukt = ty },
+
+            // static string
+            .pointer,
+            => |p| if (p.child == u8) .static_string else @compileError("Not supported return type pointer: " ++ @typeName(ty)),
             .error_union => |err| ReturnType{ .error_union = err },
             else => @compileError("Not supported return type: " ++ @typeName(ty)),
         }
@@ -116,13 +129,17 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, Extractor: type) H
                 .none => return @call(.auto, func, args),
                 .strukt => |ty| {
                     const b = @call(.auto, func, args);
-                    // const c = Content(@TypeOf(b)){ .strukt = b };
-                    try Extractor.response(ty, allocator, Response(@TypeOf(b)){ .content = .{ .strukt = b } }, req);
+                    const resp = Response(@TypeOf(b)){ .content = .{ .strukt = b } };
+                    try Extractor.response(ty, allocator, resp, req);
+                },
+                .response => |ty| {
+                    const resp = @call(.auto, func, args);
+                    try Extractor.response(ty, allocator, resp, req);
                 },
                 .static_string => {
                     const s = @call(.auto, func, args);
-                    // const c = Content([]const u8){ .string = s };
-                    try Extractor.response([]const u8, allocator, Response([]const u8){ .content = .{ .string = s } }, req);
+                    const resp = Response([]const u8){ .content = .{ .string = s } };
+                    try Extractor.response([]const u8, allocator, resp, req);
                     return;
                 },
                 .error_union => |eu| {
@@ -297,6 +314,30 @@ test "handle static string" {
             fn response(T: type, _: std.mem.Allocator, resp: Response(T), _: void) !void {
                 try std.testing.expectEqualStrings("its me", resp.content.string);
                 try std.testing.expectEqual(.ok, resp.status);
+            }
+        },
+    );
+
+    _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);
+}
+
+test "handler response with Response" {
+    const User = struct { id: i32, name: []const u8 };
+
+    const h = handlerFromFn(
+        void,
+        void,
+        struct {
+            fn createUser() Response(User) {
+                return .{ .status = .created, .content = .{ .strukt = .{ .id = 42, .name = "its me" } } };
+            }
+        }.createUser,
+        struct {
+            fn response(T: type, _: std.mem.Allocator, resp: Response(T), _: void) !void {
+                const u: User = resp.content.strukt;
+                try std.testing.expectEqual(42, u.id);
+                try std.testing.expectEqualStrings("its me", u.name);
+                try std.testing.expectEqual(.created, resp.status);
             }
         },
     );
