@@ -37,7 +37,7 @@ pub fn Content(S: type) type {
 pub fn Response(S: type) type {
     return struct {
         status: http.Status = .ok,
-        content: ?Content(S) = null,
+        content: Content(S) = .{ .string = "" },
     };
 }
 
@@ -270,7 +270,7 @@ test "handler response with body" {
         }.getUser,
         struct {
             fn response(T: type, allocator: std.mem.Allocator, resp: Response(T), _: void) !void {
-                const s = try std.json.stringifyAlloc(allocator, resp.content.?.strukt, .{});
+                const s = try std.json.stringifyAlloc(allocator, resp.content.strukt, .{});
                 defer allocator.free(s);
 
                 try std.testing.expectEqualStrings(
@@ -295,7 +295,7 @@ test "handle static string" {
         }.string,
         struct {
             fn response(T: type, _: std.mem.Allocator, resp: Response(T), _: void) !void {
-                try std.testing.expectEqualStrings("its me", resp.content.?.string);
+                try std.testing.expectEqualStrings("its me", resp.content.string);
                 try std.testing.expectEqual(.ok, resp.status);
             }
         },

@@ -68,13 +68,10 @@ pub const JsonBodyDecoder = struct {
     }
 
     pub fn response(T: type, allocator: std.mem.Allocator, resp: Response(T), r: http.Server.Request) !void {
-        const content = if (resp.content) |c|
-            switch (c) {
-                .strukt => |s| try std.json.stringifyAlloc(allocator, s, .{}),
-                .string => |s| s,
-            }
-        else
-            "";
+        const content = switch (resp.content) {
+            .strukt => |s| try std.json.stringifyAlloc(allocator, s, .{}),
+            .string => |s| s,
+        };
 
         var req = r;
         try req.respond(content, .{ .status = resp.status });
@@ -83,13 +80,10 @@ pub const JsonBodyDecoder = struct {
 
 const ErrorHandler = struct {
     fn handleError(r: http.Server.Request, resp: Response([]u8)) void {
-        const content = if (resp.content != null)
-            switch (resp.content.?) {
-                .string => |s| s,
-                .strukt => "could not send struct content",
-            }
-        else
-            "";
+        const content = switch (resp.content) {
+            .string => |s| s,
+            .strukt => "could not send struct content",
+        };
 
         var req = r;
         req.respond(content, .{ .status = resp.status }) catch |err| {

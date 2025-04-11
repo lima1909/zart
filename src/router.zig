@@ -24,13 +24,10 @@ pub fn Router(App: type, Request: type, Extractor: type) type {
     const defaultErrorHandler = struct {
         fn handleError(_: Request, resp: Response([]u8)) void {
             const status = @tagName(resp.status);
-
-            if (resp.content) |c| {
-                switch (c) {
-                    .string => |s| std.debug.print("error: {s} ({s})\n", .{ s, status }),
-                    .strukt => |s| std.debug.print("error: {any} ({s})\n", .{ s, status }),
-                }
-            } else std.debug.print("error {s}\n", .{status});
+            switch (resp.content) {
+                .string => |s| std.debug.print("error: {s} ({s})\n", .{ s, status }),
+                .strukt => |s| std.debug.print("error: {any} ({s})\n", .{ s, status }),
+            }
         }
     }.handleError;
 
@@ -401,7 +398,7 @@ test "not found" {
     router.resolve(.GET, "/not_found", &notFound, &[_]kv.KeyValue{});
 
     try std.testing.expectEqual(.not_found, notFound.resp.?.status);
-    try std.testing.expectEqualStrings("404 Not Found", notFound.resp.?.content.?.string);
+    try std.testing.expectEqualStrings("404 Not Found", notFound.resp.?.content.string);
 }
 
 test "bad request" {
@@ -415,7 +412,7 @@ test "bad request" {
 
     router.error_handler = struct {
         fn handleError(req: *BadRequest, resp: Response([]u8)) void {
-            std.testing.expectEqualStrings("400 Bad Request: error.BAD", resp.content.?.string) catch @panic("test failed");
+            std.testing.expectEqualStrings("400 Bad Request: error.BAD", resp.content.string) catch @panic("test failed");
             req.resp = resp;
             req.was_called = true;
         }
