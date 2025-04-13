@@ -22,10 +22,10 @@ const ReturnType = union(enum) {
     const Self = @This();
 
     noreturn, // void
-    static_string,
+    string,
     status, // http.Status
-    strukt: type,
-    response: type,
+    strukt,
+    response: type, // the inner type
 
     // return type combined with error
     error_union: struct {
@@ -38,17 +38,17 @@ const ReturnType = union(enum) {
             .void => .noreturn,
             // static string
             .pointer => |p| if (p.child == u8)
-                .static_string
+                .string
             else
                 @compileError("Not supported return type pointer: " ++ @typeName(ty)),
             // status
             .@"enum" => .status,
 
             // Response or struct
-            .@"struct" => if (@hasField(ty, "_contentType"))
-                ReturnType{ .response = @FieldType(ty, "_contentType") }
+            .@"struct" => if (@hasField(ty, "__typeOfCcontent__"))
+                .{ .response = @FieldType(ty, "__typeOfCcontent__") }
             else
-                ReturnType{ .strukt = ty },
+                .strukt,
 
             // with error
             .error_union => |err| ReturnType{ .error_union = .{
@@ -59,25 +59,28 @@ const ReturnType = union(enum) {
             else => @compileError("Not supported return type: " ++ @typeName(ty)),
         };
     }
+
+    fn payload(self: Self) Self {
+        return switch (self) {
+            .error_union => |eu| eu.payload,
+            else => self,
+        };
+    }
 };
-
-// Content is the Body-Content
-pub fn Content(S: type) type {
-    return union(enum) {
-        string: []const u8,
-        strukt: S,
-
-        const default: Content(S) = .{ .string = "" };
-    };
-}
 
 // The response with Content (Body)
 pub fn Response(S: type) type {
     return struct {
         status: http.Status = .ok,
-        content: Content(S) = .default,
 
-        _contentType: S = undefined,
+        // content is the Body-Content
+        content: union(enum) {
+            string: []const u8,
+            strukt: S,
+        } = .{ .string = "" }, // default, no content = ""
+
+        // only for meta programming
+        __typeOfCcontent__: S = undefined,
     };
 }
 
@@ -119,6 +122,9 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, Extractor: type) H
         }
     }
 
+    // check the return type
+    const return_type = ReturnType.new(meta.@"fn".return_type.?);
+
     // create Handler
     const h = struct {
         fn handle(app: ?App, req: Request, query: []const KeyValue, params: []const KeyValue, allocator: std.mem.Allocator) !void {
@@ -140,52 +146,28 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, Extractor: type) H
                 };
             }
 
-            // check the return type
-            const return_type = ReturnType.new(meta.@"fn".return_type.?);
-
-            // execute handler function
+            // execute handler function, depending the return value has an error
             const result = if (return_type == .error_union)
                 try @call(.auto, func, args)
             else
                 @call(.auto, func, args);
 
-            // execute handlerFn and work with result
-            switch (return_type) {
-                .strukt => |ty| {
-                    const resp = Response(@TypeOf(result)){ .content = .{ .strukt = result } };
-                    try Extractor.response(ty, allocator, resp, req);
-                },
-                .static_string => {
-                    const resp = Response([]const u8){ .content = .{ .string = result } };
-                    try Extractor.response([]const u8, allocator, resp, req);
-                },
-                .status => {
-                    const resp = Response([]const u8){ .status = result };
-                    try Extractor.response([]const u8, allocator, resp, req);
-                },
+            comptime var rty = @TypeOf(result);
+            const resp = blk: switch (return_type.payload()) {
+                .noreturn, .error_union => return,
                 .response => |ty| {
-                    try Extractor.response(ty, allocator, result, req);
+                    rty = ty;
+                    break :blk result;
                 },
-                .noreturn => {},
-                .error_union => |eu| switch (eu.payload) {
-                    .strukt => |ty| {
-                        const resp = Response(@TypeOf(result)){ .content = .{ .strukt = result } };
-                        try Extractor.response(ty, allocator, resp, req);
-                    },
-                    .static_string => {
-                        const resp = Response([]const u8){ .content = .{ .string = result } };
-                        try Extractor.response([]const u8, allocator, resp, req);
-                    },
-                    .status => {
-                        const resp = Response([]const u8){ .status = result };
-                        try Extractor.response([]const u8, allocator, resp, req);
-                    },
-                    .response => |ty| {
-                        try Extractor.response(ty, allocator, result, req);
-                    },
-                    .noreturn, .error_union => {},
+                .strukt => Response(rty){ .content = .{ .strukt = result } },
+                .string => Response(rty){ .content = .{ .string = result } },
+                .status => {
+                    rty = void;
+                    break :blk Response(void){ .status = result };
                 },
-            }
+            };
+
+            try Extractor.response(rty, allocator, resp, req);
         }
     };
 
