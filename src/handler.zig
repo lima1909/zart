@@ -21,10 +21,13 @@ const ArgType = union(enum) {
 const ReturnType = union(enum) {
     const Self = @This();
 
-    none, // void
+    noreturn, // void
     static_string,
+    status, // http.Status
     strukt: type,
     response: type,
+
+    // return type combined with error
     error_union: struct {
         error_set: type,
         payload: ReturnType,
@@ -32,9 +35,14 @@ const ReturnType = union(enum) {
 
     fn new(ty: type) Self {
         return switch (@typeInfo(ty)) {
-            .void => .none,
+            .void => .noreturn,
             // static string
-            .pointer => |p| if (p.child == u8) .static_string else @compileError("Not supported return type pointer: " ++ @typeName(ty)),
+            .pointer => |p| if (p.child == u8)
+                .static_string
+            else
+                @compileError("Not supported return type pointer: " ++ @typeName(ty)),
+            // status
+            .@"enum" => .status,
 
             // Response or struct
             .@"struct" => if (@hasField(ty, "_contentType"))
@@ -151,10 +159,14 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, Extractor: type) H
                     const resp = Response([]const u8){ .content = .{ .string = result } };
                     try Extractor.response([]const u8, allocator, resp, req);
                 },
+                .status => {
+                    const resp = Response([]const u8){ .status = result };
+                    try Extractor.response([]const u8, allocator, resp, req);
+                },
                 .response => |ty| {
                     try Extractor.response(ty, allocator, result, req);
                 },
-                .none => {},
+                .noreturn => {},
                 .error_union => |eu| switch (eu.payload) {
                     .strukt => |ty| {
                         const resp = Response(@TypeOf(result)){ .content = .{ .strukt = result } };
@@ -164,10 +176,14 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, Extractor: type) H
                         const resp = Response([]const u8){ .content = .{ .string = result } };
                         try Extractor.response([]const u8, allocator, resp, req);
                     },
+                    .status => {
+                        const resp = Response([]const u8){ .status = result };
+                        try Extractor.response([]const u8, allocator, resp, req);
+                    },
                     .response => |ty| {
                         try Extractor.response(ty, allocator, result, req);
                     },
-                    .none, .error_union => {},
+                    .noreturn, .error_union => {},
                 },
             }
         }
@@ -402,6 +418,25 @@ test "handler with error!Response" {
                 const u: User = resp.content.strukt;
                 try std.testing.expectEqual(45, u.id);
                 try std.testing.expectEqualStrings("other", u.name);
+                try std.testing.expectEqual(.created, resp.status);
+            }
+        },
+    );
+
+    _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);
+}
+
+test "handler with return state" {
+    const h = handlerFromFn(
+        void,
+        void,
+        struct {
+            fn createUser() std.http.Status {
+                return .created;
+            }
+        }.createUser,
+        struct {
+            fn response(T: type, _: std.mem.Allocator, resp: Response(T), _: void) !void {
                 try std.testing.expectEqual(.created, resp.status);
             }
         },
