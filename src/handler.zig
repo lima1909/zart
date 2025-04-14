@@ -84,12 +84,7 @@ pub fn Response(S: type) type {
     };
 }
 
-// Examples for Handler function signatures:
-//   - fn (req: Request)
-//   - fn (req: Request, params: Params)
-//   - fn (app: App, req: Request, params: P(MyParam))
-//   - fn (app: App, req: Request)
-//
+/// The main interface for creating handler functions
 pub fn Handler(App: type, Request: type) type {
     return struct {
         handle: *const fn (app: ?App, req: Request, query: []const KeyValue, params: []const KeyValue, allocator: std.mem.Allocator) anyerror!void,
@@ -146,7 +141,9 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, Extractor: type) H
                 };
             }
 
+            //
             // execute handler function, depending the return value has an error
+            //
             const result = if (return_type == .error_union)
                 try @call(.auto, func, args)
             else
@@ -154,20 +151,20 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, Extractor: type) H
 
             comptime var rty = @TypeOf(result);
             const resp = blk: switch (return_type.payload()) {
-                .noreturn, .error_union => return,
+                .noreturn, .error_union => return, // error_union can't be nested, so we can return here
                 .response => |ty| {
                     rty = ty;
                     break :blk result;
                 },
-                .strukt => Response(rty){ .content = .{ .strukt = result } },
-                .string => Response(rty){ .content = .{ .string = result } },
                 .status => {
                     rty = void;
                     break :blk Response(void){ .status = result };
                 },
+                .strukt => Response(rty){ .content = .{ .strukt = result } },
+                .string => Response(rty){ .content = .{ .string = result } },
             };
 
-            try Extractor.response(rty, allocator, resp, req);
+            try Extractor.response(rty, allocator, req, resp);
         }
     };
 
@@ -305,7 +302,7 @@ test "handler response with body" {
             }
         }.getUser,
         struct {
-            fn response(T: type, allocator: std.mem.Allocator, resp: Response(T), _: void) !void {
+            fn response(T: type, allocator: std.mem.Allocator, _: void, resp: Response(T)) !void {
                 const s = try std.json.stringifyAlloc(allocator, resp.content.strukt, .{});
                 defer allocator.free(s);
 
@@ -330,7 +327,7 @@ test "handle static string" {
             }
         }.string,
         struct {
-            fn response(T: type, _: std.mem.Allocator, resp: Response(T), _: void) !void {
+            fn response(T: type, _: std.mem.Allocator, _: void, resp: Response(T)) !void {
                 try std.testing.expectEqualStrings("its me", resp.content.string);
                 try std.testing.expectEqual(.ok, resp.status);
             }
@@ -350,7 +347,7 @@ test "handle error!static string" {
             }
         }.string,
         struct {
-            fn response(T: type, _: std.mem.Allocator, resp: Response(T), _: void) !void {
+            fn response(T: type, _: std.mem.Allocator, _: void, resp: Response(T)) !void {
                 try std.testing.expectEqualStrings("with error", resp.content.string);
                 try std.testing.expectEqual(.ok, resp.status);
             }
@@ -372,7 +369,7 @@ test "handler with Response" {
             }
         }.createUser,
         struct {
-            fn response(T: type, _: std.mem.Allocator, resp: Response(T), _: void) !void {
+            fn response(T: type, _: std.mem.Allocator, _: void, resp: Response(T)) !void {
                 const u: User = resp.content.strukt;
                 try std.testing.expectEqual(42, u.id);
                 try std.testing.expectEqualStrings("its me", u.name);
@@ -396,7 +393,7 @@ test "handler with error!Response" {
             }
         }.createUserWithError,
         struct {
-            fn response(T: type, _: std.mem.Allocator, resp: Response(T), _: void) !void {
+            fn response(T: type, _: std.mem.Allocator, _: void, resp: Response(T)) !void {
                 const u: User = resp.content.strukt;
                 try std.testing.expectEqual(45, u.id);
                 try std.testing.expectEqualStrings("other", u.name);
@@ -418,7 +415,7 @@ test "handler with return state" {
             }
         }.createUser,
         struct {
-            fn response(T: type, _: std.mem.Allocator, resp: Response(T), _: void) !void {
+            fn response(T: type, _: std.mem.Allocator, _: void, resp: Response(T)) !void {
                 try std.testing.expectEqual(.created, resp.status);
             }
         },

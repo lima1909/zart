@@ -5,7 +5,7 @@ const KeyValue = @import("kv.zig").KeyValue;
 const Response = @import("handler.zig").Response;
 
 pub fn Server(comptime App: type) type {
-    const Router = @import("router.zig").Router(App, http.Server.Request, JsonBodyDecoder);
+    const Router = @import("router.zig").Router(App, http.Server.Request, JsonExtractor);
 
     return struct {
         const Self = @This();
@@ -59,22 +59,22 @@ pub fn Server(comptime App: type) type {
     };
 }
 
-pub const JsonBodyDecoder = struct {
-    pub fn body(T: type, allocator: std.mem.Allocator, r: http.Server.Request) !T {
-        var req = r;
-        const reader = try req.reader();
+pub const JsonExtractor = struct {
+    pub fn body(T: type, allocator: std.mem.Allocator, req: http.Server.Request) !T {
+        var r = req;
+        const reader = try r.reader();
 
         return try std.json.parseFromSliceLeaky(T, allocator, try reader.readAllAlloc(allocator, 10 * 1024), .{});
     }
 
-    pub fn response(T: type, allocator: std.mem.Allocator, resp: Response(T), r: http.Server.Request) !void {
+    pub fn response(T: type, allocator: std.mem.Allocator, req: http.Server.Request, resp: Response(T)) !void {
         const content = switch (resp.content) {
             .strukt => |s| try std.json.stringifyAlloc(allocator, s, .{}),
             .string => |s| s,
         };
 
-        var req = r;
-        try req.respond(content, .{ .status = resp.status });
+        var r = req;
+        try r.respond(content, .{ .status = resp.status });
     }
 };
 

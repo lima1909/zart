@@ -1,9 +1,7 @@
 const std = @import("std");
 
-const TreeConfig = @import("tree.zig").Config;
-
 const Response = @import("handler.zig").Response;
-const Content = @import("handler.zig").Content;
+const TreeConfig = @import("tree.zig").Config;
 
 const kv = @import("kv.zig");
 
@@ -14,7 +12,7 @@ pub const Config = struct {
 ///
 /// Signature for Extractor:
 ///   pub fn body(T: type, allocator: std.mem.Allocator, r: Request) !T
-///   pub fn response(T: type, allocator: std.mem.Allocator, resp: Response(T), r: Request) !void
+///   pub fn response(T: type, allocator: std.mem.Allocator, r: Request, resp: Response(T)) !void
 /// where T means a struct (the Body)
 ///
 pub fn Router(App: type, Request: type, Extractor: type) type {
