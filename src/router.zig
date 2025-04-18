@@ -24,7 +24,7 @@ pub fn Router(App: type, Request: type, Extractor: type) type {
             const status = @tagName(resp.status);
             switch (resp.content) {
                 .string => |s| std.debug.print("error: {s} ({s})\n", .{ s, status }),
-                .strukt => |s| std.debug.print("error: {any} ({s})\n", .{ s, status }),
+                .object => |s| std.debug.print("error: {any} ({s})\n", .{ s, status }),
             }
         }
     }.handleError;

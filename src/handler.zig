@@ -1,21 +1,90 @@
 const std = @import("std");
 const http = std.http;
+const Allocator = std.mem.Allocator;
 
 const KeyValue = @import("kv.zig").KeyValue;
 const KeyValues = @import("kv.zig").KeyValues;
 
-/// ArgTypes of handler Args (parts of an request)
-const ArgType = union(enum) {
-    app,
-    request,
-    p: struct { typ: type }, // fromVars
-    params,
-    q: struct { typ: type }, // fromVars
-    query,
-    b: struct { typ: type }, // decoder
-    body,
-    fromRequest: struct { typ: type }, // argType, e.g. Body.fromRequest
-};
+/// The main interface for creating handler functions
+pub fn Handler(App: type, Request: type) type {
+    return struct {
+        handle: *const fn (app: ?App, req: Request, query: []const KeyValue, params: []const KeyValue, allocator: Allocator) anyerror!void,
+    };
+}
+
+/// Factory to create an Handler for a given function.
+pub fn handlerFromFn(App: type, Request: type, func: anytype, Extractor: type) Handler(App, Request) {
+    const h = struct {
+        fn handle(app: ?App, req: Request, query: []const KeyValue, params: []const KeyValue, allocator: Allocator) !void {
+            // the switch doesn't work, if App and Request have the same type!
+            const NoApp = struct {};
+            const AppType: type = if (App == void and Request == void) NoApp else App;
+            if (AppType == Request) {
+                @compileError("App: '" ++ @typeName(App) ++ "' and Request: '" ++ @typeName(Request) ++ "' must be diffenrent types");
+            }
+
+            const info = @typeInfo(@TypeOf(func));
+
+            // check the function args and create arg-values
+            var args: std.meta.ArgsTuple(@TypeOf(func)) = undefined;
+            inline for (info.@"fn".params, 0..) |p, i| {
+                if (p.type) |ty| {
+                    args[i] = switch (ty) {
+                        Allocator => allocator,
+                        AppType => if (app) |a| a else return error.NoAppDefined,
+                        Request => req,
+                        Params => Params{ .vars = params },
+                        Query => Query{ .vars = query },
+                        Body => try Extractor.body(std.json.Value, allocator, req),
+                        else => if (@typeInfo(ty) == .@"struct")
+                            if (@hasField(ty, TagFieldName))
+                                switch (@FieldType(ty, TagFieldName)) {
+                                    ParamTag => try FromVars(ty, params),
+                                    QueryTag => try FromVars(ty, query),
+                                    BodyTag => try Extractor.body(ty, allocator, req),
+                                    else => unreachable,
+                                }
+                            else
+                                ty.fromRequest(req)
+                        else
+                            @compileError("Not supported parameter type for a handler function: " ++ @typeName(ty)),
+                    };
+                } else {
+                    @compileError("Missing type for parameter in function: " ++ @typeName(info.Fn));
+                }
+            }
+
+            //
+            // execute handler function, depending the return value has an error
+            //
+            // check the return type
+            const return_type = ReturnType.new(info.@"fn".return_type.?);
+            const result = if (return_type == .error_union)
+                try @call(.auto, func, args)
+            else
+                @call(.auto, func, args);
+
+            comptime var rty = @TypeOf(result);
+            const resp = blk: switch (return_type.payload()) {
+                .noreturn, .error_union => return, // error_union can't be nested, so we can return here
+                .response => |ty| {
+                    rty = ty;
+                    break :blk result;
+                },
+                .status => {
+                    rty = void;
+                    break :blk Response(void){ .status = result };
+                },
+                .object => Response(rty){ .content = .{ .object = result } },
+                .string => Response(rty){ .content = .{ .string = result } },
+            };
+
+            try Extractor.response(rty, allocator, req, resp);
+        }
+    };
+
+    return Handler(App, Request){ .handle = h.handle };
+}
 
 /// ReturnTypes of handler returns
 const ReturnType = union(enum) {
@@ -24,7 +93,7 @@ const ReturnType = union(enum) {
     noreturn, // void
     string,
     status, // http.Status
-    strukt,
+    object,
     response: type, // the inner type
 
     // return type combined with error
@@ -48,7 +117,7 @@ const ReturnType = union(enum) {
             .@"struct" => if (@hasField(ty, "__typeOfCcontent__"))
                 .{ .response = @FieldType(ty, "__typeOfCcontent__") }
             else
-                .strukt,
+                .object,
 
             // with error
             .error_union => |err| ReturnType{ .error_union = .{
@@ -76,7 +145,7 @@ pub fn Response(S: type) type {
         // content is the Body-Content
         content: union(enum) {
             string: []const u8,
-            strukt: S,
+            object: S,
         } = .{ .string = "" }, // default, no content = ""
 
         // only for meta programming
@@ -84,98 +153,8 @@ pub fn Response(S: type) type {
     };
 }
 
-/// The main interface for creating handler functions
-pub fn Handler(App: type, Request: type) type {
-    return struct {
-        handle: *const fn (app: ?App, req: Request, query: []const KeyValue, params: []const KeyValue, allocator: std.mem.Allocator) anyerror!void,
-    };
-}
-
-pub fn handlerFromFn(App: type, Request: type, func: anytype, Extractor: type) Handler(App, Request) {
-    const meta = @typeInfo(@TypeOf(func));
-    comptime var arg_types: [meta.@"fn".params.len]ArgType = undefined;
-
-    // check the function args
-    inline for (meta.@"fn".params, 0..) |p, i| {
-        if (p.type) |ty| {
-            arg_types[i] = switch (ty) {
-                App => .app,
-                Request => .request,
-                Params => .params,
-                Query => .query,
-                Body => .body,
-                else => if (@typeInfo(ty) == .@"struct")
-                    if (@hasField(ty, TagFieldName))
-                        @FieldType(ty, TagFieldName).argType(ty)
-                    else
-                        ArgType{ .fromRequest = .{ .typ = ty } }
-                else
-                    @compileError("Not supported parameter type for a handler function: " ++ @typeName(ty)),
-            };
-        } else {
-            @compileError("Missing type for parameter in function: " ++ @typeName(meta.Fn));
-        }
-    }
-
-    // check the return type
-    const return_type = ReturnType.new(meta.@"fn".return_type.?);
-
-    // create Handler
-    const h = struct {
-        fn handle(app: ?App, req: Request, query: []const KeyValue, params: []const KeyValue, allocator: std.mem.Allocator) !void {
-            const Args = std.meta.ArgsTuple(@TypeOf(func));
-            var args: Args = undefined;
-
-            // create arg-values
-            inline for (0..arg_types.len) |i| {
-                args[i] = switch (arg_types[i]) {
-                    .app => if (app) |a| a else return error.NoAppDefined,
-                    .request => req,
-                    .p => |p| try FromVars(p.typ, params),
-                    .params => Params{ .vars = params },
-                    .q => |q| try FromVars(q.typ, query),
-                    .query => Query{ .vars = query },
-                    .b => |b| try Extractor.body(b.typ, allocator, req),
-                    .body => try Extractor.body(std.json.Value, allocator, req),
-                    .fromRequest => |r| r.typ.fromRequest(req),
-                };
-            }
-
-            //
-            // execute handler function, depending the return value has an error
-            //
-            const result = if (return_type == .error_union)
-                try @call(.auto, func, args)
-            else
-                @call(.auto, func, args);
-
-            comptime var rty = @TypeOf(result);
-            const resp = blk: switch (return_type.payload()) {
-                .noreturn, .error_union => return, // error_union can't be nested, so we can return here
-                .response => |ty| {
-                    rty = ty;
-                    break :blk result;
-                },
-                .status => {
-                    rty = void;
-                    break :blk Response(void){ .status = result };
-                },
-                .strukt => Response(rty){ .content = .{ .strukt = result } },
-                .string => Response(rty){ .content = .{ .string = result } },
-            };
-
-            try Extractor.response(rty, allocator, req, resp);
-        }
-    };
-
-    return Handler(App, Request){ .handle = h.handle };
-}
-
-const ParamTag = struct {
-    fn argType(comptime T: type) ArgType {
-        return ArgType{ .p = .{ .typ = T } };
-    }
-};
+/// Marker struct for tagging the P-struct.
+const ParamTag = struct {};
 
 /// URL parameter.
 pub const Params = KeyValues(ParamTag);
@@ -185,11 +164,8 @@ pub fn P(comptime S: type) type {
     return structWithTag(S, ParamTag);
 }
 
-const QueryTag = struct {
-    fn argType(comptime T: type) ArgType {
-        return ArgType{ .q = .{ .typ = T } };
-    }
-};
+/// Marker struct for tagging the Q-struct.
+const QueryTag = struct {};
 
 /// URL query parameter.
 pub const Query = KeyValues(QueryTag);
@@ -199,19 +175,16 @@ pub fn Q(comptime S: type) type {
     return structWithTag(S, QueryTag);
 }
 
-const BodyTag = struct {
-    fn argType(comptime T: type) ArgType {
-        return ArgType{ .b = .{ .typ = T } };
-    }
-};
+/// Marker struct for tagging the B-struct.
+const BodyTag = struct {};
+
+/// Body from request as abstract Json-Value
+pub const Body = std.json.Value;
 
 /// Marker, marked the given Struct as Body
 pub fn B(comptime S: type) type {
     return structWithTag(S, BodyTag);
 }
-
-/// Body from request as abstract Json-Value
-pub const Body = std.json.Value;
 
 /// Field name for the Tags.
 const TagFieldName = "__TAG__";
@@ -302,8 +275,8 @@ test "handler response with body" {
             }
         }.getUser,
         struct {
-            fn response(T: type, allocator: std.mem.Allocator, _: void, resp: Response(T)) !void {
-                const s = try std.json.stringifyAlloc(allocator, resp.content.strukt, .{});
+            fn response(T: type, allocator: Allocator, _: void, resp: Response(T)) !void {
+                const s = try std.json.stringifyAlloc(allocator, resp.content.object, .{});
                 defer allocator.free(s);
 
                 try std.testing.expectEqualStrings(
@@ -327,7 +300,7 @@ test "handle static string" {
             }
         }.string,
         struct {
-            fn response(T: type, _: std.mem.Allocator, _: void, resp: Response(T)) !void {
+            fn response(T: type, _: Allocator, _: void, resp: Response(T)) !void {
                 try std.testing.expectEqualStrings("its me", resp.content.string);
                 try std.testing.expectEqual(.ok, resp.status);
             }
@@ -347,7 +320,7 @@ test "handle error!static string" {
             }
         }.string,
         struct {
-            fn response(T: type, _: std.mem.Allocator, _: void, resp: Response(T)) !void {
+            fn response(T: type, _: Allocator, _: void, resp: Response(T)) !void {
                 try std.testing.expectEqualStrings("with error", resp.content.string);
                 try std.testing.expectEqual(.ok, resp.status);
             }
@@ -357,6 +330,28 @@ test "handle error!static string" {
     _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);
 }
 
+test "handle string with allocator" {
+    const h = handlerFromFn(
+        void,
+        void,
+        struct {
+            fn string(alloc: Allocator, params: Params) ![]const u8 {
+                const name: ?[]const u8 = try params.valueAs([]const u8, "name");
+                return std.fmt.allocPrint(alloc, "<html>Hello {s}</html>", .{name.?});
+            }
+        }.string,
+        struct {
+            fn response(T: type, alloc: Allocator, _: void, resp: Response(T)) !void {
+                defer alloc.free(resp.content.string);
+
+                try std.testing.expectEqualStrings("<html>Hello me</html>", resp.content.string);
+                try std.testing.expectEqual(.ok, resp.status);
+            }
+        },
+    );
+
+    _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{.{ .key = "name", .value = "me" }}, std.testing.allocator);
+}
 test "handler with Response" {
     const User = struct { id: i32, name: []const u8 };
 
@@ -365,12 +360,12 @@ test "handler with Response" {
         void,
         struct {
             fn createUser() Response(User) {
-                return .{ .status = .created, .content = .{ .strukt = .{ .id = 42, .name = "its me" } } };
+                return .{ .status = .created, .content = .{ .object = .{ .id = 42, .name = "its me" } } };
             }
         }.createUser,
         struct {
-            fn response(T: type, _: std.mem.Allocator, _: void, resp: Response(T)) !void {
-                const u: User = resp.content.strukt;
+            fn response(T: type, _: Allocator, _: void, resp: Response(T)) !void {
+                const u: User = resp.content.object;
                 try std.testing.expectEqual(42, u.id);
                 try std.testing.expectEqualStrings("its me", u.name);
                 try std.testing.expectEqual(.created, resp.status);
@@ -389,14 +384,44 @@ test "handler with error!Response" {
         void,
         struct {
             fn createUserWithError() !Response(User) {
-                return .{ .status = .created, .content = .{ .strukt = .{ .id = 45, .name = "other" } } };
+                return .{ .status = .created, .content = .{ .object = .{ .id = 45, .name = "other" } } };
             }
         }.createUserWithError,
         struct {
-            fn response(T: type, _: std.mem.Allocator, _: void, resp: Response(T)) !void {
-                const u: User = resp.content.strukt;
+            fn response(T: type, _: Allocator, _: void, resp: Response(T)) !void {
+                const u: User = resp.content.object;
                 try std.testing.expectEqual(45, u.id);
                 try std.testing.expectEqualStrings("other", u.name);
+                try std.testing.expectEqual(.created, resp.status);
+            }
+        },
+    );
+
+    _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);
+}
+
+test "handler with error!Response with List" {
+    const User = struct { id: i32, name: []const u8 };
+
+    const h = handlerFromFn(
+        void,
+        void,
+        struct {
+            fn createUserWithError(alloc: Allocator) !Response(std.ArrayList(User)) {
+                var user_list = std.ArrayList(User).init(alloc);
+                try user_list.append(.{ .id = 1, .name = "One" });
+                try user_list.append(.{ .id = 2, .name = "Two" });
+                return .{ .status = .created, .content = .{ .object = user_list } };
+            }
+        }.createUserWithError,
+        struct {
+            fn response(T: type, _: Allocator, _: void, resp: Response(T)) !void {
+                const ul: std.ArrayList(User) = resp.content.object;
+                defer ul.deinit();
+
+                const user1 = ul.items[0];
+                try std.testing.expectEqual(1, user1.id);
+                try std.testing.expectEqualStrings("One", user1.name);
                 try std.testing.expectEqual(.created, resp.status);
             }
         },
@@ -415,7 +440,7 @@ test "handler with return state" {
             }
         }.createUser,
         struct {
-            fn response(T: type, _: std.mem.Allocator, _: void, resp: Response(T)) !void {
+            fn response(T: type, _: Allocator, _: void, resp: Response(T)) !void {
                 try std.testing.expectEqual(.created, resp.status);
             }
         },
