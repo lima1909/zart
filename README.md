@@ -13,6 +13,34 @@ ZART stands for: `Zig Adaptive Radix Tree` and is an router based on a radix tre
 This project is an experiment, with the aim of integrating HTTP handlers as  "normal" functions, so it is easy to write tests,
 without using "artificial" arguments and return values (request and response).
 
+## Router
+
+```zig
+const std = @import("std");
+const http = std.http;
+
+var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+const allocator = gpa.allocator();
+
+const MyApp = struct {
+  // DB connection
+  // global and exchange data
+};
+
+var app = App{};
+
+var router = Router(MyApp, http.Server.Request, JsonExtractor).initWithApp(allocator, &app, .{});
+defer router.deinit();
+
+try router.post("/user", createUser);
+
+
+const User = struct { id: i32, name: []const u8 };
+
+// possible functions arg: the original Request, URL Parameter and Query and a Body from a User. 
+fn createUser(r: http.Server.Request, p: Params, q: Query, b: B(User)) !Response(User) { }
+```
+
 ## Handler
 
 ```zig
@@ -44,11 +72,12 @@ fn renameUser(user: B(User)) User {
 
 | Arguments        | Description                                                                    |
 |------------------|--------------------------------------------------------------------------------|
+| `Allocator`      | Allocator for creating dynamic objects (Strings, Lists, ...)                   |
 | `App`            | The application, the main context (for example: the database connections)      |
 | `Request`        | The Request (for example: `std.http.Server.Request`)                           |
-| `p` and `params` | The Request parametes (key-value-pairs)                                        |
-| `q` and `paramy` | The Request query (key-value-pairs)                                            |
-| `b` and `body`   | The Request body, where `b` maps to a user struct and body to `std.json.Value` |
+| `P` and `Params` | The Request parametes (key-value-pairs)                                        |
+| `Q` and `Query`  | The Request query (key-value-pairs)                                            |
+| `B` and `Body`   | The Request body, where `b` maps to a user struct and body to `std.json.Value` |
 | `fromRequest`    | The Request body                                                               |
 
 ### Return
