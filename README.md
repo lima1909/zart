@@ -82,10 +82,10 @@ fn renameUser(user: B(User)) User {
 
 ### Return
 
-| Return           | Description                                      |
-|------------------|--------------------------------------------------|
-| `noreturn`       | `void` no return value                           |
-| `string`         | The static Response string (error message)       |
-| `status`         | The Response status                              |
-| `strukt`         | A `struct` which can convert to a Response body  |
-| `response`       | Combine a Response with status and body          |
+| Return           | Description                                                            |
+|------------------|------------------------------------------------------------------------|
+| `noreturn`       | `void` no return value                                                 |
+| `string`         | The static Response string (error message)                             |
+| `status`         | The Response status                                                    |
+| `object`         | A `object` which can convert to a Response body (Strings, Lists, ...)  |
+| `response`       | Combine a Response with status and body                                |
