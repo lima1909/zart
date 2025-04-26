@@ -13,7 +13,7 @@ pub fn Handler(App: type, Request: type) type {
 }
 
 /// Factory to create an Handler for a given function.
-pub fn handlerFromFn(App: type, Request: type, func: anytype, Extractor: type) Handler(App, Request) {
+pub fn handlerFromFn(App: type, Request: type, f: Func, Extractor: type) Handler(App, Request) {
     const h = struct {
         fn handle(app: ?App, req: Request, query: []const KeyValue, params: []const KeyValue, allocator: Allocator) !void {
             // the switch doesn't work, if App and Request have the same type!
@@ -23,10 +23,10 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, Extractor: type) H
                 @compileError("App: '" ++ @typeName(App) ++ "' and Request: '" ++ @typeName(Request) ++ "' must be diffenrent types");
             }
 
-            const info = @typeInfo(@TypeOf(func));
+            const info = @typeInfo(f.func);
 
             // check the function args and create arg-values
-            var args: std.meta.ArgsTuple(@TypeOf(func)) = undefined;
+            var args: std.meta.ArgsTuple(f.func) = undefined;
             inline for (info.@"fn".params, 0..) |p, i| {
                 if (p.type) |ty| {
                     args[i] = switch (ty) {
@@ -60,9 +60,9 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, Extractor: type) H
             // check the return type
             const return_type = ReturnType.new(info.@"fn".return_type.?);
             const result = if (return_type == .error_union)
-                try @call(.auto, func, args)
+                try @call(.auto, f.fnPtr(), args)
             else
-                @call(.auto, func, args);
+                @call(.auto, f.fnPtr(), args);
 
             comptime var rty = @TypeOf(result);
             const resp = blk: switch (return_type.payload()) {
@@ -85,6 +85,19 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, Extractor: type) H
 
     return Handler(App, Request){ .handle = h.handle };
 }
+
+pub const Func = struct {
+    ptr: *const anyopaque,
+    func: type,
+
+    pub fn from(f: anytype) Func {
+        return .{ .ptr = f, .func = @TypeOf(f) };
+    }
+
+    pub fn fnPtr(self: Func) *const self.func {
+        return @ptrCast(@alignCast(self.ptr));
+    }
+};
 
 /// ReturnTypes of handler returns
 const ReturnType = union(enum) {
@@ -247,18 +260,41 @@ test "fromVars int and foat field" {
     try std.testing.expectEqual(2.4, p.fnumber);
 }
 
+test "User Body Arg" {
+    const User = struct { id: i32, name: []const u8 };
+    const userFn = struct {
+        fn user(u: B(User)) User {
+            return .{ .id = u.id, .name = u.name };
+        }
+    }.user;
+    const r = userFn(.{ .id = 21, .name = "me" });
+
+    try std.testing.expectEqual(21, r.id);
+    try std.testing.expectEqualStrings("me", r.name);
+}
+
 test "handler with no args and void return" {
-    const h = handlerFromFn(void, void, struct {
-        fn foo() void {}
-    }.foo, void);
+    const h = handlerFromFn(
+        void,
+        void,
+        Func.from(struct {
+            fn foo() void {}
+        }.foo),
+        void,
+    );
 
     _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);
 }
 
 test "handler with no args and error_union with void return" {
-    const h = handlerFromFn(void, void, struct {
-        fn foo() !void {}
-    }.foo, void);
+    const h = handlerFromFn(
+        void,
+        void,
+        Func.from(struct {
+            fn foo() !void {}
+        }.foo),
+        void,
+    );
 
     _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);
 }
@@ -269,11 +305,11 @@ test "handler response with body" {
     const h = handlerFromFn(
         void,
         void,
-        struct {
+        Func.from(struct {
             fn getUser() User {
                 return .{ .id = 42, .name = "its me" };
             }
-        }.getUser,
+        }.getUser),
         struct {
             fn response(T: type, allocator: Allocator, _: void, resp: Response(T)) !void {
                 const s = try std.json.stringifyAlloc(allocator, resp.content.object, .{});
@@ -294,11 +330,11 @@ test "handle static string" {
     const h = handlerFromFn(
         void,
         void,
-        struct {
+        Func.from(struct {
             fn string() []const u8 {
                 return "its me";
             }
-        }.string,
+        }.string),
         struct {
             fn response(T: type, _: Allocator, _: void, resp: Response(T)) !void {
                 try std.testing.expectEqualStrings("its me", resp.content.string);
@@ -314,11 +350,11 @@ test "handle error!static string" {
     const h = handlerFromFn(
         void,
         void,
-        struct {
+        Func.from(struct {
             fn string() ![]const u8 {
                 return "with error";
             }
-        }.string,
+        }.string),
         struct {
             fn response(T: type, _: Allocator, _: void, resp: Response(T)) !void {
                 try std.testing.expectEqualStrings("with error", resp.content.string);
@@ -334,12 +370,12 @@ test "handle string with allocator" {
     const h = handlerFromFn(
         void,
         void,
-        struct {
+        Func.from(struct {
             fn string(alloc: Allocator, params: Params) ![]const u8 {
                 const name: ?[]const u8 = try params.valueAs([]const u8, "name");
                 return std.fmt.allocPrint(alloc, "<html>Hello {s}</html>", .{name.?});
             }
-        }.string,
+        }.string),
         struct {
             fn response(T: type, alloc: Allocator, _: void, resp: Response(T)) !void {
                 defer alloc.free(resp.content.string);
@@ -358,11 +394,11 @@ test "handler with Response" {
     const h = handlerFromFn(
         void,
         void,
-        struct {
+        Func.from(struct {
             fn createUser() Response(User) {
                 return .{ .status = .created, .content = .{ .object = .{ .id = 42, .name = "its me" } } };
             }
-        }.createUser,
+        }.createUser),
         struct {
             fn response(T: type, _: Allocator, _: void, resp: Response(T)) !void {
                 const u: User = resp.content.object;
@@ -382,11 +418,11 @@ test "handler with error!Response" {
     const h = handlerFromFn(
         void,
         void,
-        struct {
+        Func.from(struct {
             fn createUserWithError() !Response(User) {
                 return .{ .status = .created, .content = .{ .object = .{ .id = 45, .name = "other" } } };
             }
-        }.createUserWithError,
+        }.createUserWithError),
         struct {
             fn response(T: type, _: Allocator, _: void, resp: Response(T)) !void {
                 const u: User = resp.content.object;
@@ -406,14 +442,14 @@ test "handler with error!Response with List" {
     const h = handlerFromFn(
         void,
         void,
-        struct {
+        Func.from(struct {
             fn createUserWithError(alloc: Allocator) !Response(std.ArrayList(User)) {
                 var user_list = std.ArrayList(User).init(alloc);
                 try user_list.append(.{ .id = 1, .name = "One" });
                 try user_list.append(.{ .id = 2, .name = "Two" });
                 return .{ .status = .created, .content = .{ .object = user_list } };
             }
-        }.createUserWithError,
+        }.createUserWithError),
         struct {
             fn response(T: type, _: Allocator, _: void, resp: Response(T)) !void {
                 const ul: std.ArrayList(User) = resp.content.object;
@@ -434,11 +470,11 @@ test "handler with return state" {
     const h = handlerFromFn(
         void,
         void,
-        struct {
+        Func.from(struct {
             fn createUser() std.http.Status {
                 return .created;
             }
-        }.createUser,
+        }.createUser),
         struct {
             fn response(T: type, _: Allocator, _: void, resp: Response(T)) !void {
                 try std.testing.expectEqual(.created, resp.status);
