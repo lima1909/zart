@@ -11,33 +11,38 @@
 ZART stands for: `Zig Adaptive Radix Tree` and is an router based on a radix tree.
 
 This project is an experiment, with the aim of integrating HTTP handlers as  "normal" functions, so it is easy to write tests,
-without using "artificial" arguments and return values (request and response).
+without using "artificial" arguments and return values (like: request and response).
 
-## Router
+- zero dependencies**
+- (🚀 blazing) fast
+- easy to develop and write unit tests
+
+
+## Example (code snippet) for using the Router with the std-Zig-library
 
 ```zig
-const std = @import("std");
-const http = std.http;
-
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-const allocator = gpa.allocator();
-
-const MyApp = struct {
-  // DB connection
-  // global and exchange data
-};
-
-var app = App{};
-
-var router = Router(MyApp, http.Server.Request, JsonExtractor).initWithApp(allocator, &app, .{});
+// create a Router with Routes
+const router = try zart.NewRouter(http.Server.Request).init(allocator, .{
+     zart.Route("/users", post(createUser)),
+     zart.Route("/users/:id", get(user)),
+}, .{
+    .Extractor = server.JsonExtractor,
+    .error_handler = server.ErrorHandler.handleError,
+});
 defer router.deinit();
 
-try router.post("/user", createUser);
+// very simple HTTP server from the std library
+const addr = try std.net.Address.resolveIp("127.0.0.1", 8080);
+var listener = try addr.listen(.{ .reuse_address = true });
+std.debug.print("Listening on {}\n", .{addr});
 
+while (true) {
+   // handle connection with routing
+    try server.handleConnection(void, &router, try listener.accept());
+}
 
-const User = struct { id: i32, name: []const u8 };
-
-// possible functions arg: the original Request, URL Parameter and Query and a Body from a User. 
+// possible functions args: the original Request, URL Parameter and Query and a Body from a User. 
+// the result is the created User.
 fn createUser(r: http.Server.Request, p: Params, q: Query, b: B(User)) !Response(User) { }
 ```
 

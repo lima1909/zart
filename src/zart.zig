@@ -1,6 +1,3 @@
-pub const vars = @import("./kv.zig");
-pub const tree = @import("./tree.zig");
-
 pub const NewRouter = @import("router.zig").NewRouter;
 pub const Route = @import("router.zig").Route;
 

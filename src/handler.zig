@@ -57,26 +57,35 @@ pub fn handlerFromFn(App: type, Request: type, f: Func, Extractor: type) Handler
             //
             // execute handler function, depending the return value has an error
             //
-            // check the return type
-            const return_type = ReturnType.new(info.@"fn".return_type.?);
-            const result = if (return_type == .error_union)
+            const result = if (@typeInfo(info.@"fn".return_type.?) == .error_union)
                 try @call(.auto, f.fnPtr(), args)
             else
                 @call(.auto, f.fnPtr(), args);
 
+            // check the return type
             comptime var rty = @TypeOf(result);
-            const resp = blk: switch (return_type.payload()) {
-                .noreturn, .error_union => return, // error_union can't be nested, so we can return here
-                .response => |ty| {
-                    rty = ty;
+            const resp = blk: switch (@typeInfo(rty)) {
+                // error_union can't be nested, so we can return here
+                // do nothing
+                .void, .error_union => return,
+                // the given result is already a Response
+                .@"struct" => if (@hasField(rty, "__typeOfContent__")) {
+                    // type of the wrapped object
+                    rty = @FieldType(rty, "__typeOfContent__");
                     break :blk result;
+                } else {
+                    // wrap the given object into Response
+                    break :blk Response(rty){ .content = .{ .object = result } };
                 },
-                .status => {
+                // status
+                .@"enum" => {
                     rty = void;
                     break :blk Response(void){ .status = result };
                 },
-                .object => Response(rty){ .content = .{ .object = result } },
-                .string => Response(rty){ .content = .{ .string = result } },
+                // string
+                .pointer => |p| if (p.child == u8)
+                    Response(rty){ .content = .{ .string = result } },
+                else => @compileError("Not supported return type: " ++ @typeName(rty)),
             };
 
             try Extractor.response(rty, allocator, req, resp);
@@ -99,57 +108,6 @@ pub const Func = struct {
     }
 };
 
-/// ReturnTypes of handler returns
-const ReturnType = union(enum) {
-    const Self = @This();
-
-    noreturn, // void
-    string,
-    status, // http.Status
-    object,
-    response: type, // the inner type
-
-    // return type combined with error
-    error_union: struct {
-        error_set: type,
-        payload: ReturnType,
-    },
-
-    fn new(ty: type) Self {
-        return switch (@typeInfo(ty)) {
-            .void => .noreturn,
-            // static string
-            .pointer => |p| if (p.child == u8)
-                .string
-            else
-                @compileError("Not supported return type pointer: " ++ @typeName(ty)),
-            // status
-            .@"enum" => .status,
-
-            // Response or struct
-            .@"struct" => if (@hasField(ty, "__typeOfCcontent__"))
-                .{ .response = @FieldType(ty, "__typeOfCcontent__") }
-            else
-                .object,
-
-            // with error
-            .error_union => |err| ReturnType{ .error_union = .{
-                .error_set = err.error_set,
-                .payload = new(err.payload),
-            } },
-
-            else => @compileError("Not supported return type: " ++ @typeName(ty)),
-        };
-    }
-
-    fn payload(self: Self) Self {
-        return switch (self) {
-            .error_union => |eu| eu.payload,
-            else => self,
-        };
-    }
-};
-
 // The response with Content (Body)
 pub fn Response(S: type) type {
     return struct {
@@ -162,7 +120,7 @@ pub fn Response(S: type) type {
         } = .{ .string = "" }, // default, no content = ""
 
         // only for meta programming
-        __typeOfCcontent__: S = undefined,
+        __typeOfContent__: S = undefined,
     };
 }
 
