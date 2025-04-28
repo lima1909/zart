@@ -4,6 +4,10 @@ const Allocator = std.mem.Allocator;
 
 const KeyValue = @import("kv.zig").KeyValue;
 
+const Params = arg.Params;
+const Query = arg.Query;
+const Body = arg.Body;
+
 /// The main interface for creating handler functions
 pub fn Handler(App: type, Request: type) type {
     return struct {
@@ -38,8 +42,8 @@ pub fn handlerFromFn(App: type, Request: type, f: Func, Extractor: type) Handler
                         else => if (@typeInfo(ty) == .@"struct")
                             if (@hasField(ty, TagFieldName))
                                 switch (@FieldType(ty, TagFieldName)) {
-                                    ParamTag => try (KeyValues(void){ .kvs = params }).into(ty),
-                                    QueryTag => try (KeyValues(void){ .kvs = query }).into(ty),
+                                    ParamTag => try (Params{ .kvs = params }).into(ty),
+                                    QueryTag => try (Query{ .kvs = query }).into(ty),
                                     BodyTag => try Extractor.body(ty, allocator, req),
                                     else => unreachable,
                                 }
@@ -123,38 +127,33 @@ pub fn Response(S: type) type {
     };
 }
 
-/// Marker struct for tagging the P-struct.
 const ParamTag = struct {};
-
-/// URL parameter.
-pub const Params = KeyValues(ParamTag);
-
-/// Marker, marked the given Struct as Params
-pub fn P(comptime S: type) type {
-    return structWithTag(S, ParamTag);
-}
-
-/// Marker struct for tagging the Q-struct.
 const QueryTag = struct {};
-
-/// URL query parameter.
-pub const Query = KeyValues(QueryTag);
-
-/// Marker, marked the given Struct as Query
-pub fn Q(comptime S: type) type {
-    return structWithTag(S, QueryTag);
-}
-
-/// Marker struct for tagging the B-struct.
 const BodyTag = struct {};
 
-/// Body from request as abstract Json-Value
-pub const Body = std.json.Value;
+/// arg is only a namespace for easy import all possible args
+pub const arg = struct {
+    /// URL parameter.
+    pub const Params = KeyValues(ParamTag);
+    /// Marker, marked the given Struct as Params
+    pub fn P(comptime S: type) type {
+        return structWithTag(S, ParamTag);
+    }
 
-/// Marker, marked the given Struct as Body
-pub fn B(comptime S: type) type {
-    return structWithTag(S, BodyTag);
-}
+    /// URL query parameter.
+    pub const Query = KeyValues(QueryTag);
+    /// Marker, marked the given Struct as Query
+    pub fn Q(comptime S: type) type {
+        return structWithTag(S, QueryTag);
+    }
+
+    /// Body from request as abstract Json-Value
+    pub const Body = std.json.Value;
+    /// Marker, marked the given Struct as Body
+    pub fn B(comptime S: type) type {
+        return structWithTag(S, BodyTag);
+    }
+};
 
 /// Field name for the Tags.
 const TagFieldName = "__TAG__";
@@ -176,7 +175,7 @@ fn structWithTag(comptime S: type, comptime Tag: type) type {
     });
 }
 
-pub fn KeyValues(Tag: type) type {
+fn KeyValues(Tag: type) type {
     return struct {
         const __TAG__: Tag = undefined; // mark the key-values for a specific type
         const Self = @This();
@@ -253,27 +252,26 @@ test "key-values" {
 }
 
 test "fromVars string field" {
-    const X = struct { name: []const u8 };
-    const kvs = KeyValues(void){ .kvs = &[_]KeyValue{.{ .key = "name", .value = "Mario" }} };
-    const p = try kvs.into(X);
+    const p = try (KeyValues(void){ .kvs = &[_]KeyValue{
+        .{ .key = "name", .value = "Mario" },
+    } }).into(struct { name: []const u8 });
 
     try std.testing.expectEqualStrings("Mario", p.name);
 }
 
 test "fromVars bool field" {
-    const X = struct { maybe: bool };
-    const kvs = KeyValues(void){ .kvs = &[_]KeyValue{.{ .key = "maybe", .value = "true" }} };
-    const p = try kvs.into(X);
+    const p = try (KeyValues(void){ .kvs = &[_]KeyValue{
+        .{ .key = "maybe", .value = "true" },
+    } }).into(struct { maybe: bool });
 
     try std.testing.expectEqual(true, p.maybe);
 }
 
 test "fromVars int and foat field" {
-    const X = struct { inumber: i32, fnumber: f32 };
     const p = try (KeyValues(void){ .kvs = &[_]KeyValue{
         .{ .key = "inumber", .value = "42" },
         .{ .key = "fnumber", .value = "2.4" },
-    } }).into(X);
+    } }).into(struct { inumber: i32, fnumber: f32 });
 
     try std.testing.expectEqual(42, p.inumber);
     try std.testing.expectEqual(2.4, p.fnumber);
@@ -282,7 +280,7 @@ test "fromVars int and foat field" {
 test "User Body Arg" {
     const User = struct { id: i32, name: []const u8 };
     const userFn = struct {
-        fn user(u: B(User)) User {
+        fn user(u: arg.B(User)) User {
             return .{ .id = u.id, .name = u.name };
         }
     }.user;
@@ -390,7 +388,7 @@ test "handle string with allocator" {
         void,
         void,
         Func.from(struct {
-            fn string(alloc: Allocator, params: Params) ![]const u8 {
+            fn string(alloc: Allocator, params: arg.Params) ![]const u8 {
                 const name: ?[]const u8 = try params.valueAs([]const u8, "name");
                 return std.fmt.allocPrint(alloc, "<html>Hello {s}</html>", .{name.?});
             }

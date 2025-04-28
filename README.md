@@ -21,7 +21,9 @@ without using "artificial" arguments and return values (like: request and respon
 ## Example (code snippet) for using the Router with the std-Zig-library
 
 ```zig
+const std = @import("std");
 const zart = @import("zart.zig");
+const arg = zart.handler.arg;
 
 // create a Router with Routes
 const router = try zart.NewRouter(http.Server.Request).init(allocator, .{
@@ -45,7 +47,7 @@ while (true) {
 
 // possible functions args: the original Request, URL Parameter and Query and a Body from a User. 
 // the result is the created User.
-fn createUser(r: http.Server.Request, p: Params, q: Query, b: B(User)) !Response(User) { }
+fn createUser(r: http.Server.Request, p: arg.Params, q: arg.Query, b: arg.B(User)) !Response(User) { }
 ```
 
 ## Handler

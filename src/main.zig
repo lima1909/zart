@@ -1,13 +1,8 @@
 const std = @import("std");
 const http = std.http;
 
-const request = @import("handler.zig");
-const Params = request.Params;
-const Query = request.Query;
-const B = request.B;
-const Body = request.Body;
-
 const zart = @import("zart.zig");
+const arg = zart.handler.arg;
 const get = @import("router.zig").get;
 
 pub fn main() !void {
@@ -37,7 +32,7 @@ const ID = struct { id: i32 };
 //
 // curl -X GET http://localhost:8080/user/42?foo=bar -d '{"id": 41}'
 //
-fn user(r: http.Server.Request, p: Params, q: Query, b: B(ID)) ID {
+fn user(r: http.Server.Request, p: arg.Params, q: arg.Query, b: arg.B(ID)) ID {
     std.debug.print("Method: {}\n", .{r.head.method});
     if (p.value("id")) |v| {
         std.debug.print("- Param ID: {s}\n", .{v});
@@ -54,7 +49,7 @@ fn user(r: http.Server.Request, p: Params, q: Query, b: B(ID)) ID {
 //
 // curl -X GET http://localhost:8080/value -d '{"id": 41}'
 //
-fn value(b: Body) !void {
+fn value(b: arg.Body) !void {
     const obj = b.object;
     const id = obj.get("id") orelse .null;
     std.debug.print("- Body ID: {}\n", .{id.integer});

@@ -225,13 +225,13 @@ test "router for handler object" {
     try std.testing.expectEqual(4, i);
 }
 
-const request = @import("handler.zig");
-const P = request.P;
-const Q = request.Q;
-const B = request.B;
-const Params = request.Params;
-const Query = request.Query;
-const Body = request.Body;
+const arg = @import("handler.zig").arg;
+const P = arg.P;
+const Q = arg.Q;
+const B = arg.B;
+const Params = arg.Params;
+const Query = arg.Query;
+const Body = arg.Body;
 
 test "router for i32" {
     const App = struct { value: i32 };
