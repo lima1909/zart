@@ -1,6 +1,6 @@
 <div align="center">
 
-# ZART
+# ZART: a router written in ⚡ZIG ⚡
 
 [![Build Status](https://img.shields.io/github/actions/workflow/status/lima1909/zart/ci.yaml?style=for-the-badge)](https://github.com/lima1909/zart/actions)
 ![License](https://img.shields.io/github/license/lima1909/zart?style=for-the-badge)
@@ -13,21 +13,23 @@ ZART stands for: `Zig Adaptive Radix Tree` and is an router based on a radix tre
 This project is an experiment, with the aim of integrating HTTP handlers as  "normal" functions, so it is easy to write tests,
 without using "artificial" arguments and return values (like: request and response).
 
-- zero dependencies**
-- (🚀 blazing) fast
-- easy to develop and write unit tests
+- 🎯 zero dependencies
+- 🚀 (blazing) fast
+- 🛠️ easy to develop and write unit tests
 
 
 ## Example (code snippet) for using the Router with the std-Zig-library
 
 ```zig
+const zart = @import("zart.zig");
+
 // create a Router with Routes
 const router = try zart.NewRouter(http.Server.Request).init(allocator, .{
-     zart.Route("/users", post(createUser)),
+     zart.Route("/users",.{ post(createUser), get(listUsers) }),
      zart.Route("/users/:id", get(user)),
 }, .{
-    .Extractor = server.JsonExtractor,
-    .error_handler = server.ErrorHandler.handleError,
+    .Extractor = zart.server.JsonExtractor,
+    .error_handler = zart.server.ErrorHandler.handleError,
 });
 defer router.deinit();
 
@@ -38,7 +40,7 @@ std.debug.print("Listening on {}\n", .{addr});
 
 while (true) {
    // handle connection with routing
-    try server.handleConnection(void, &router, try listener.accept());
+    try zart.server.handleConnection(void, &router, try listener.accept());
 }
 
 // possible functions args: the original Request, URL Parameter and Query and a Body from a User. 
@@ -64,7 +66,7 @@ fn getUser() User {
 
 // handler with error and combined response
 fn createUserWithError() !Response(User) {
-   return .{ .status = .created, .content = .{ .strukt = .{ .id = 45, .name = "other" } } };
+   return .{ .status = .created, .content = .{ .object= .{ .id = 45, .name = "other" } } };
 }
 
 // get the User from the body and return the User to the response.
@@ -75,21 +77,21 @@ fn renameUser(user: B(User)) User {
 
 ### Arguments
 
-| Arguments        | Description                                                                    |
-|------------------|--------------------------------------------------------------------------------|
-| `Allocator`      | Allocator for creating dynamic objects (Strings, Lists, ...)                   |
-| `App`            | The application, the main context (for example: the database connections)      |
-| `Request`        | The Request (for example: `std.http.Server.Request`)                           |
-| `P` and `Params` | The Request parametes (key-value-pairs)                                        |
-| `Q` and `Query`  | The Request query (key-value-pairs)                                            |
-| `B` and `Body`   | The Request body, where `b` maps to a user struct and body to `std.json.Value` |
-| `fromRequest`    | The Request body                                                               |
+| Arguments           | Description                                                                    |
+|---------------------|--------------------------------------------------------------------------------|
+| `Allocator`         | Allocator for creating dynamic objects (Strings, Lists, ...)                   |
+| `App`               | The application, the main context (for example: the database connections)      |
+| `Request`           | The Request (for example: `std.http.Server.Request`)                           |
+| `P(T)` and `Params` | The Request parametes (key-value-pairs)                                        |
+| `Q(T)` and `Query`  | The Request query (key-value-pairs)                                            |
+| `B(T)` and `Body`   | The Request body, where `b` maps to a user struct and body to `std.json.Value` |
+| `fromRequest`       | The Request body                                                               |
 
 ### Return
 
 | Return           | Description                                                            |
 |------------------|------------------------------------------------------------------------|
-| `noreturn`       | `void` no return value                                                 |
+| `void`           | no return value                                                 |
 | `string`         | The static Response string (error message)                             |
 | `status`         | The Response status                                                    |
 | `object`         | A `object` which can convert to a Response body (Strings, Lists, ...)  |

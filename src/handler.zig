@@ -3,7 +3,6 @@ const http = std.http;
 const Allocator = std.mem.Allocator;
 
 const KeyValue = @import("kv.zig").KeyValue;
-const KeyValues = @import("kv.zig").KeyValues;
 
 /// The main interface for creating handler functions
 pub fn Handler(App: type, Request: type) type {
@@ -33,14 +32,14 @@ pub fn handlerFromFn(App: type, Request: type, f: Func, Extractor: type) Handler
                         Allocator => allocator,
                         AppType => if (app) |a| a else return error.NoAppDefined,
                         Request => req,
-                        Params => Params{ .vars = params },
-                        Query => Query{ .vars = query },
+                        Params => Params{ .kvs = params },
+                        Query => Query{ .kvs = query },
                         Body => try Extractor.body(std.json.Value, allocator, req),
                         else => if (@typeInfo(ty) == .@"struct")
                             if (@hasField(ty, TagFieldName))
                                 switch (@FieldType(ty, TagFieldName)) {
-                                    ParamTag => try FromVars(ty, params),
-                                    QueryTag => try FromVars(ty, query),
+                                    ParamTag => try (KeyValues(void){ .kvs = params }).into(ty),
+                                    QueryTag => try (KeyValues(void){ .kvs = query }).into(ty),
                                     BodyTag => try Extractor.body(ty, allocator, req),
                                     else => unreachable,
                                 }
@@ -177,42 +176,104 @@ fn structWithTag(comptime S: type, comptime Tag: type) type {
     });
 }
 
-/// Create an instance of an given Struct from the given key-values.
-fn FromVars(comptime S: type, vars: []const KeyValue) !S {
-    var instance: S = undefined;
-    const vs = KeyValues(void){ .vars = vars };
+pub fn KeyValues(Tag: type) type {
+    return struct {
+        const __TAG__: Tag = undefined; // mark the key-values for a specific type
+        const Self = @This();
 
-    const info = @typeInfo(S);
-    if (info == .@"struct") {
-        inline for (info.@"struct".fields) |field| {
-            if (!comptime std.mem.eql(u8, TagFieldName, field.name)) {
-                @field(instance, field.name) = if (try vs.valueAs(field.type, field.name)) |val| val else undefined;
+        kvs: []const KeyValue,
+
+        pub inline fn value(self: *const Self, key: []const u8) ?[]const u8 {
+            for (self.kvs) |v| {
+                if (std.mem.eql(u8, key, v.key)) {
+                    return v.value;
+                }
             }
-        }
-    } else {
-        @compileError(std.fmt.comptimePrint("parms T type must be a struct, not: {s}", .{@typeName(S)}));
-    }
 
-    return instance;
+            return null;
+        }
+
+        pub inline fn valueAs(self: *const Self, T: type, key: []const u8) !?T {
+            if (self.value(key)) |v| {
+                return switch (@typeInfo(T)) {
+                    .int => try std.fmt.parseInt(T, v, 10),
+                    .float => try std.fmt.parseFloat(T, v),
+                    .bool => {
+                        if (std.mem.eql(u8, v, "true")) {
+                            return true;
+                        } else if (std.mem.eql(u8, v, "false")) {
+                            return false;
+                        }
+                        return error.InvalidBool;
+                    },
+                    .pointer => |p| if (p.child == u8) v else null,
+                    else => @compileError("not supported type: " ++ @typeName(T) ++ " for key: " ++ key),
+                };
+            }
+
+            return null;
+        }
+
+        /// Create an instance of an given Struct from the given key-values.
+        fn into(self: *const Self, comptime S: type) !S {
+            var instance: S = undefined;
+
+            const info = @typeInfo(S);
+            if (info == .@"struct") {
+                inline for (info.@"struct".fields) |field| {
+                    if (!comptime std.mem.eql(u8, TagFieldName, field.name)) {
+                        @field(instance, field.name) = if (try self.valueAs(field.type, field.name)) |val| val else undefined;
+                    }
+                }
+            } else {
+                @compileError(std.fmt.comptimePrint("parms T type must be a struct, not: {s}", .{@typeName(S)}));
+            }
+
+            return instance;
+        }
+    };
+}
+
+test "key-values" {
+    const input = [_]KeyValue{
+        .{ .key = "aint", .value = "42" },
+        .{ .key = "abool", .value = "true" },
+        .{ .key = "afloat", .value = "4.2" },
+        .{ .key = "atxt", .value = "foo" },
+    };
+    const v = KeyValues(void){ .kvs = &input };
+
+    try std.testing.expectEqual(42, (try v.valueAs(i32, "aint")).?);
+    try std.testing.expectEqual(4.2, (try v.valueAs(f32, "afloat")).?);
+    try std.testing.expectEqual(true, (try v.valueAs(bool, "abool")).?);
+    try std.testing.expectEqual("foo", (try v.valueAs([]const u8, "atxt")).?);
+
+    try std.testing.expectEqualStrings("foo", v.value("atxt").?);
+    try std.testing.expectEqual(null, v.value("not_exist"));
 }
 
 test "fromVars string field" {
     const X = struct { name: []const u8 };
-    const p = try FromVars(X, &[_]KeyValue{.{ .key = "name", .value = "Mario" }});
+    const kvs = KeyValues(void){ .kvs = &[_]KeyValue{.{ .key = "name", .value = "Mario" }} };
+    const p = try kvs.into(X);
 
     try std.testing.expectEqualStrings("Mario", p.name);
 }
 
 test "fromVars bool field" {
     const X = struct { maybe: bool };
-    const p = try FromVars(X, &[_]KeyValue{.{ .key = "maybe", .value = "true" }});
+    const kvs = KeyValues(void){ .kvs = &[_]KeyValue{.{ .key = "maybe", .value = "true" }} };
+    const p = try kvs.into(X);
 
     try std.testing.expectEqual(true, p.maybe);
 }
 
 test "fromVars int and foat field" {
     const X = struct { inumber: i32, fnumber: f32 };
-    const p = try FromVars(X, &[_]KeyValue{ .{ .key = "inumber", .value = "42" }, .{ .key = "fnumber", .value = "2.4" } });
+    const p = try (KeyValues(void){ .kvs = &[_]KeyValue{
+        .{ .key = "inumber", .value = "42" },
+        .{ .key = "fnumber", .value = "2.4" },
+    } }).into(X);
 
     try std.testing.expectEqual(42, p.inumber);
     try std.testing.expectEqual(2.4, p.fnumber);

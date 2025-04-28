@@ -1,6 +1,8 @@
 pub const NewRouter = @import("router.zig").NewRouter;
 pub const Route = @import("router.zig").Route;
 
+pub const server = @import("server.zig");
+
 test {
     _ = @import("./handler.zig");
     _ = @import("./kv.zig");

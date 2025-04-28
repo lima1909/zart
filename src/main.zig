@@ -8,7 +8,6 @@ const B = request.B;
 const Body = request.Body;
 
 const zart = @import("zart.zig");
-const server = @import("server.zig");
 const get = @import("router.zig").get;
 
 pub fn main() !void {
@@ -19,8 +18,8 @@ pub fn main() !void {
         zart.Route("/user/:id", get(user)),
         zart.Route("/value", get(value)),
     }, .{
-        .Extractor = server.JsonExtractor,
-        .error_handler = server.ErrorHandler.handleError,
+        .Extractor = zart.server.JsonExtractor,
+        .error_handler = zart.server.ErrorHandler.handleError,
     });
     defer router.deinit();
 
@@ -29,7 +28,7 @@ pub fn main() !void {
     std.debug.print("Listening on {}\n", .{addr});
 
     while (true) {
-        try server.handleConnection(void, &router, try listener.accept());
+        try zart.server.handleConnection(void, &router, try listener.accept());
     }
 }
 
@@ -45,7 +44,7 @@ fn user(r: http.Server.Request, p: Params, q: Query, b: B(ID)) ID {
     }
 
     if (q.value("foo")) |v| {
-        std.debug.print("- Query Foo: {s} ({d})\n", .{ v, q.vars.len });
+        std.debug.print("- Query Foo: {s} ({d})\n", .{ v, q.kvs.len });
     }
 
     // std.debug.print("- Body ID: {d}\n", .{b.id});
