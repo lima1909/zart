@@ -37,11 +37,7 @@ pub const JsonExtractor = struct {
     }
 
     pub fn response(T: type, allocator: Allocator, req: Request, resp: Response(T)) !void {
-        const content = switch (resp.content) {
-            .object => |s| try std.json.stringifyAlloc(allocator, s, .{}),
-            .string => |s| s,
-        };
-
+        const content = try std.json.stringifyAlloc(allocator, resp.body_content, .{});
         var r = req;
         try r.respond(content, .{ .status = resp.status });
     }
@@ -49,13 +45,8 @@ pub const JsonExtractor = struct {
 
 pub const ErrorHandler = struct {
     pub fn handleError(r: Request, resp: Response([]u8)) void {
-        const content = switch (resp.content) {
-            .object => "could not send struct content",
-            .string => |s| s,
-        };
-
         var req = r;
-        req.respond(content, .{ .status = resp.status }) catch |err| {
+        req.respond(resp.body_content, .{ .status = resp.status }) catch |err| {
             std.debug.print("error by sending the response: {} ({s})\n", .{ err, @tagName(resp.status) });
         };
     }

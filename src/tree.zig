@@ -811,3 +811,25 @@ test "complex router" {
         .idx = 2,
     }, tree.resolve("/info/me/project/zart"));
 }
+
+test "XTree" {
+    var tree = Tree(i32).init(std.testing.allocator, .{});
+    defer tree.deinit();
+
+    try tree.insert("/user/:id", 1);
+    try tree.insert("/value", 2);
+
+    try std.testing.expectEqualStrings("/", tree.root.?.key);
+    try std.testing.expectEqual(null, tree.root.?.value);
+    try std.testing.expectEqual(2, tree.root.?.children.items.len);
+    //
+    const user = tree.root.?.children.items[0];
+    try std.testing.expectEqualStrings("user/:id", user.key);
+    try std.testing.expectEqual(1, user.value);
+    try std.testing.expectEqual(0, user.children.items.len);
+
+    const value = tree.root.?.children.items[1];
+    try std.testing.expectEqualStrings("value", value.key);
+    try std.testing.expectEqual(2, value.value);
+    try std.testing.expectEqual(0, value.children.items.len);
+}

@@ -1,63 +1,8 @@
 const std = @import("std");
-const http = std.http;
-
-const Response = @import("handler.zig").Response;
-const Func = @import("handler.zig").Func;
-const TreeConfig = @import("tree.zig").Config;
+const Allocator = std.mem.Allocator;
 
 const kv = @import("kv.zig");
-
-const Handle = struct {
-    method: http.Method,
-    func: Func,
-};
-
-pub fn get(f: anytype) Handle {
-    return .{ .method = .GET, .func = Func.from(f) };
-}
-
-pub fn post(f: anytype) Handle {
-    return .{ .method = .POST, .func = Func.from(f) };
-}
-
-pub fn patch(f: anytype) Handle {
-    return .{ .method = .PATCH, .func = Func.from(f) };
-}
-
-pub fn delete(f: anytype) Handle {
-    return .{ .method = .DELETE, .func = Func.from(f) };
-}
-
-/// A general Handle with http.Method and handle function.
-pub fn handle(m: http.Method, f: anytype) Handle {
-    return .{ .method = m, .func = Func.from(f) };
-}
-
-///
-/// Route has an given path and one or a list of Handle:
-/// A Handle consist of a http.Method and a (handle function).
-///
-/// Examples:
-/// Route("/users/:id", get(user));
-/// Route("/users", .{ patch(updateUser) , post(createUser) });
-///
-pub fn Route(path: []const u8, handles: anytype) type {
-    const hlen = if (@TypeOf(handles) == Handle) 1 else handles.len;
-    comptime var hs: [hlen]Handle = undefined;
-
-    if (@TypeOf(handles) == Handle) {
-        hs = [1]Handle{handles};
-    } else {
-        inline for (handles, 0..) |h, i| {
-            hs[i] = h;
-        }
-    }
-
-    return struct {
-        path: []const u8 = path,
-        handles: [hlen]Handle = hs,
-    };
-}
+const Response = @import("handler.zig").Response;
 
 pub fn Config(Request: type) type {
     return struct {
@@ -71,81 +16,76 @@ pub fn Config(Request: type) type {
     };
 }
 
+/// A Route is a 'path' and one or more 'handles'
+/// A 'handles' is a 'method' and a 'hanlder function'
+/// example:
+///     Route('/users', .{ .GET, users })                            // one Handle
+///     Route('/users', .{ .{ .GET, users }, .{ .POST, users }  })   // List of two Handles
+///     Route('/users', .{ get(users), post(users) })                // List of two Handles
+pub fn Route(path: []const u8, handles: anytype) struct { path: []const u8, handles: @TypeOf(handles) } {
+    return .{ .path = path, .handles = handles };
+}
+
 pub fn NewRouter(Request: type) type {
     return struct {
-        pub fn init(allocator: std.mem.Allocator, routes: anytype, cfg: Config(Request)) !Router(void, Request) {
+        pub fn init(allocator: Allocator, routes: anytype, cfg: Config(Request)) !Router(void, Request) {
             return try Router(void, Request).init(allocator, null, routes, cfg);
         }
 
-        pub fn initWithApp(allocator: std.mem.Allocator, app: anytype, routes: anytype, cfg: Config(Request)) !Router(@TypeOf(app), Request) {
+        pub fn initWithApp(allocator: Allocator, app: anytype, routes: anytype, cfg: Config(Request)) !Router(@TypeOf(app), Request) {
             return try Router(@TypeOf(app), Request).init(allocator, app, routes, cfg);
         }
     };
 }
 
 pub fn Router(App: type, Request: type) type {
-    const H = @import("handler.zig").Handler(App, Request);
-    const Tree = @import("tree.zig").Tree(H);
+    // NOT FOUND error
+    const NOT_FOUND = Response([]u8){
+        .status = .not_found,
+        .body_content = @constCast("404 Not Found"),
+    };
 
+    // default error handler
     const defaultErrorHandler = struct {
         fn handleError(_: Request, resp: Response([]u8)) void {
             const status = @tagName(resp.status);
-            switch (resp.content) {
-                .string => |s| std.debug.print("error: {s} ({s})\n", .{ s, status }),
-                .object => |s| std.debug.print("error: {any} ({s})\n", .{ s, status }),
-            }
+            std.debug.print("error: {any} ({s})\n", .{ resp.body_content, status });
         }
     }.handleError;
 
     return struct {
-        allocator: std.mem.Allocator,
-
-        _app: ?App,
-        _error_handler: *const fn (Request, Response([]u8)) void,
-
-        // methods
-        _get: Tree = undefined,
-        _post: Tree = undefined,
-        _patch: Tree = undefined,
-        _delete: Tree = undefined,
-        _other: Tree = undefined,
-
         const Self = @This();
 
-        fn init(allocator: std.mem.Allocator, app: ?App, routes: anytype, cfg: Config(Request)) !Self {
-            const tcfg = @import("tree.zig").Config{ .parser = cfg.parser };
+        app: ?App,
+        trees: Trees(App, Request),
+        error_handler: *const fn (Request, Response([]u8)) void,
 
+        fn init(allocator: Allocator, app: ?App, routes: anytype, cfg: Config(Request)) !Self {
             var self = Self{
-                .allocator = allocator,
-                ._app = app,
-                ._error_handler = cfg.error_handler orelse defaultErrorHandler,
-
-                ._get = Tree.init(allocator, tcfg),
-                ._post = Tree.init(allocator, tcfg),
-                ._patch = Tree.init(allocator, tcfg),
-                ._delete = Tree.init(allocator, tcfg),
-                ._other = Tree.init(allocator, tcfg),
+                .app = app,
+                .trees = Trees(App, Request).init(cfg),
+                .error_handler = cfg.error_handler orelse defaultErrorHandler,
             };
 
             inline for (routes) |r| {
-                const route = r{};
-
-                inline for (route.handles) |h| {
+                if (@typeInfo(@TypeOf(r.handles[0])) == .enum_literal) {
                     const handler = @import("handler.zig").handlerFromFn(
                         App,
                         Request,
-                        h.func,
+                        r.handles[1],
                         cfg.Extractor,
                     );
-
-                    const tree = switch (h.method) {
-                        .GET => &self._get,
-                        .POST => &self._post,
-                        .PATCH => &self._patch,
-                        .DELETE => &self._delete,
-                        else => &self._other,
-                    };
-                    try tree.insert(route.path, handler);
+                    try self.trees.write(r.handles[0], allocator).insert(r.path, handler);
+                } else {
+                    inline for (r.handles) |h| {
+                        const handler = @import("handler.zig").handlerFromFn(
+                            App,
+                            Request,
+                            h[1],
+                            cfg.Extractor,
+                        );
+                        try self.trees.write(h[0], allocator).insert(r.path, handler);
+                    }
                 }
             }
 
@@ -153,49 +93,153 @@ pub fn Router(App: type, Request: type) type {
         }
 
         pub fn deinit(self: Self) void {
-            self._get.deinit();
-            self._post.deinit();
-            self._patch.deinit();
-            self._delete.deinit();
-            self._other.deinit();
+            self.trees.deinit();
         }
 
-        pub fn resolve(self: *const Self, method: http.Method, path: []const u8, req: Request, query: []const kv.KeyValue) void {
-            const matched = switch (method) {
-                .GET => &self._get,
-                .POST => &self._post,
-                .PATCH => &self._patch,
-                .DELETE => &self._delete,
-                else => &self._other,
-            }.resolve(path);
+        pub fn resolve(self: *const Self, method: anytype, path: []const u8, req: Request, query: []const kv.KeyValue) void {
+            const tree = self.trees.read(method) orelse {
+                self.error_handler(req, NOT_FOUND);
+                return;
+            };
 
+            const matched = tree.resolve(path);
             if (matched.value) |handler| {
-
-                // TODO: replace self.allocator
-                var arena = std.heap.ArenaAllocator.init(self.allocator);
+                // TODO: can I do it better?
+                var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+                var arena = std.heap.ArenaAllocator.init(gpa.allocator());
                 defer arena.deinit();
 
-                handler.handle(self._app, req, query, &matched.kvs, arena.allocator()) catch |err| {
-                    // BAD REQUEST handler
+                handler.handle(self.app, req, query, &matched.kvs, arena.allocator()) catch |err| {
                     var buffer: [50]u8 = undefined;
-                    const error_msg = std.fmt.bufPrint(&buffer, "{s}{}", .{ "400 Bad Request: ", err }) catch "400 Bad Request";
-
-                    self._error_handler(req, Response([]u8){
+                    self.error_handler(req, .{
                         .status = .bad_request,
-                        .content = .{ .string = error_msg },
+                        .body_content = std.fmt.bufPrint(&buffer, "{s}{}", .{ "400 Bad Request: ", err }) catch @constCast("400 Bad Request"),
                     });
                 };
                 return;
             }
 
-            // NOT FOUND handler
-            self._error_handler(req, Response([]u8){
-                .status = .not_found,
-                .content = .{ .string = "404 Not Found" },
-            });
+            self.error_handler(req, NOT_FOUND);
         }
     };
 }
+
+pub fn Trees(App: type, Request: type) type {
+    const H = @import("handler.zig").Handler(App, Request);
+    const Tree = @import("tree.zig").Tree(H);
+    const TreeCfg = @import("tree.zig").Config;
+
+    return struct {
+        const Self = @This();
+
+        treeCfg: TreeCfg,
+        trees: [9]?Tree = .{null} ** 9,
+
+        fn init(cfg: Config(Request)) Self {
+            return .{
+                .treeCfg = .{ .parser = cfg.parser },
+            };
+        }
+
+        fn deinit(self: Self) void {
+            inline for (self.trees) |tree| {
+                if (tree) |t| {
+                    t.deinit();
+                }
+            }
+        }
+
+        const INVALID_INDEX: u8 = 100;
+
+        inline fn index(method: anytype) u8 {
+            return switch (method) {
+                .GET => 0,
+                .POST => 1,
+                .PATCH => 2,
+                .PUT => 3,
+                .DELETE => 4,
+                .HEAD => 5,
+                .CONNECT => 6,
+                .OPTIONS => 7,
+                .TRACE => 8,
+                else => INVALID_INDEX,
+            };
+        }
+
+        fn write(self: *Self, method: @TypeOf(.enum_literal), allocator: Allocator) *Tree {
+            const idx = index(method);
+            if (idx == INVALID_INDEX) {
+                @compileError("Not supported HTTP-Method: " ++ @tagName(method));
+            }
+
+            if (self.trees[idx] == null) {
+                self.trees[idx] = Tree.init(allocator, self.treeCfg);
+            }
+            return &self.trees[idx].?;
+        }
+
+        fn read(self: *const Self, method: anytype) ?*const Tree {
+            const idx = index(method);
+            if (idx == INVALID_INDEX) {
+                @panic("Not supported HTTP-Method");
+            }
+
+            return if (self.trees[idx]) |t| &t else null;
+        }
+    };
+}
+
+pub fn Handle(func: anytype) type {
+    return struct {
+        @TypeOf(.enum_literal),
+        @TypeOf(func),
+    };
+}
+
+pub fn get(func: anytype) Handle(func) {
+    return .{ .GET, func };
+}
+
+pub fn post(func: anytype) Handle(func) {
+    return .{ .POST, func };
+}
+
+pub fn patch(func: anytype) Handle(func) {
+    return .{ .PATCH, func };
+}
+
+pub fn put(func: anytype) Handle(func) {
+    return .{ .PUT, func };
+}
+
+pub fn delete(func: anytype) Handle(func) {
+    return .{ .DELETE, func };
+}
+
+pub fn head(func: anytype) Handle(func) {
+    return .{ .HEAD, func };
+}
+
+pub fn connect(func: anytype) Handle(func) {
+    return .{ .CONNECT, func };
+}
+
+pub fn options(func: anytype) Handle(func) {
+    return .{ .OPTIONS, func };
+}
+
+pub fn trace(func: anytype) Handle(func) {
+    return .{ .TRACE, func };
+}
+
+// ========================== TESTS =============================
+const arg = @import("handler.zig").arg;
+const P = arg.P;
+const Q = arg.Q;
+const B = arg.B;
+const Params = arg.Params;
+const Query = arg.Query;
+const Body = arg.Body;
 
 test "router for handler object" {
     const ReqObject = struct {
@@ -215,23 +259,19 @@ test "router for handler object" {
     }.user;
 
     const router = try NewRouter(*i32).init(std.testing.allocator, .{
-        Route("/foo", get(user)),
+        Route("/foo", .{ get(user), post(user) }),
+        .{ .path = "/bar", .handles = .{ .GET, user } },
     }, .{});
     defer router.deinit();
 
     var i: i32 = 3;
+
     router.resolve(.GET, "/foo", &i, &[_]kv.KeyValue{});
-
     try std.testing.expectEqual(4, i);
-}
 
-const arg = @import("handler.zig").arg;
-const P = arg.P;
-const Q = arg.Q;
-const B = arg.B;
-const Params = arg.Params;
-const Query = arg.Query;
-const Body = arg.Body;
+    router.resolve(.GET, "/bar", &i, &[_]kv.KeyValue{});
+    try std.testing.expectEqual(5, i);
+}
 
 test "router for i32" {
     const App = struct { value: i32 };
@@ -245,12 +285,12 @@ test "router for i32" {
     }.addOne;
 
     const router = try NewRouter(*i32).initWithApp(std.testing.allocator, &app, .{
-        Route("/foo", handle(.HEAD, addOne)),
+        Route("/foo", .{ .HEAD, addOne }),
     }, .{});
     defer router.deinit();
 
     var i: i32 = 3;
-    router.resolve(.OPTIONS, "/foo", &i, &[_]kv.KeyValue{});
+    router.resolve(.HEAD, "/foo", &i, &[_]kv.KeyValue{});
 
     try std.testing.expectEqual(4, i);
     try std.testing.expectEqual(5, app.value);
@@ -267,12 +307,12 @@ test "router std.http.Server.Request" {
             try std.testing.expectEqual(42, (try params.valueAs(i32, "id")).?);
 
             try std.testing.expectEqualStrings("/user/42", req.head.target);
-            try std.testing.expectEqual(std.http.Method.GET, req.head.method);
+            try std.testing.expectEqual(.GET, req.head.method);
         }
     }.user;
 
     const router = try NewRouter(*HttpRequest).init(std.testing.allocator, .{
-        Route("/user/:id", patch(user)),
+        Route("/user/:id", .{ .PATCH, user }),
     }, .{});
     defer router.deinit();
 
@@ -282,8 +322,8 @@ test "router std.http.Server.Request" {
         .reader_state = undefined,
         .head = std.http.Server.Request.Head{
             .target = "/user/42",
-            .method = http.Method.GET,
-            .version = http.Version.@"HTTP/1.0",
+            .method = .GET,
+            .version = std.http.Version.@"HTTP/1.0",
             .expect = null,
             .content_type = null,
             .content_length = null,
@@ -295,6 +335,7 @@ test "router std.http.Server.Request" {
     };
 
     router.resolve(.PATCH, "/user/42", &req, &[_]kv.KeyValue{});
+
     // the user function set keep_alive = true
     try std.testing.expectEqual(true, req.head.keep_alive);
 }
@@ -309,12 +350,13 @@ test "router for struct params" {
     }.addOne;
 
     const router = try NewRouter(*i32).init(std.testing.allocator, .{
-        Route("/foo/:ok", delete(addOne)),
+        Route("/foo/:ok", .{ .DELETE, addOne }),
     }, .{});
     defer router.deinit();
 
     var i: i32 = 3;
     router.resolve(.DELETE, "/foo/true", &i, &[_]kv.KeyValue{});
+
     try std.testing.expectEqual(4, i);
 }
 
@@ -327,7 +369,7 @@ test "router for params" {
     }.addOne;
 
     const router = try NewRouter(*i32).init(std.testing.allocator, .{
-        Route("/foo/:id", post(addOne)),
+        Route("/foo/:id", .{post(addOne)}),
     }, .{});
     defer router.deinit();
 
@@ -344,7 +386,7 @@ test "first Params, than request" {
     }.foo;
 
     const router = try NewRouter(*i32).init(std.testing.allocator, .{
-        Route("/foo/:id", get(foo)),
+        Route("/foo/:id", &.{get(foo)}),
     }, .{});
     defer router.deinit();
 
@@ -361,7 +403,7 @@ test "with query" {
     }.foo;
 
     const router = try NewRouter(*i32).init(std.testing.allocator, .{
-        Route("/foo", get(foo)),
+        Route("/foo", .{ .GET, foo }),
     }, .{});
     defer router.deinit();
 
@@ -379,7 +421,7 @@ test "with Q" {
     }.foo;
 
     const router = try NewRouter(*i32).init(std.testing.allocator, .{
-        Route("/foo", get(foo)),
+        Route("/foo", .{ .GET, foo }),
     }, .{});
     defer router.deinit();
 
@@ -402,7 +444,7 @@ test "with B" {
     }.foo;
 
     const router = try NewRouter(*i32).init(std.testing.allocator, .{
-        Route("/foo", get(foo)),
+        Route("/foo", .{ .GET, foo }),
     }, .{ .Extractor = extract });
     defer router.deinit();
 
@@ -426,7 +468,7 @@ test "with Body" {
     }.foo;
 
     const router = try NewRouter(*i32).init(std.testing.allocator, .{
-        Route("/foo", get(foo)),
+        Route("/foo", &.{ .GET, foo }),
     }, .{ .Extractor = extract });
     defer router.deinit();
 
@@ -455,7 +497,7 @@ test "request with two args" {
     }.foo;
 
     const router = try NewRouter(Req).init(std.testing.allocator, .{
-        Route("/foo", get(foo)),
+        Route("/foo", .{ .GET, foo }),
     }, .{ .Extractor = extract });
     defer router.deinit();
 
@@ -467,7 +509,15 @@ test "request with two args" {
 test "not found" {
     const NotFound = struct { resp: ?Response([]u8) = null };
 
-    const router = try NewRouter(*NotFound).init(std.testing.allocator, .{}, .{
+    const foo = struct {
+        fn foo() void {
+            return;
+        }
+    }.foo;
+
+    const router = try NewRouter(*NotFound).init(std.testing.allocator, .{
+        Route("/foo", .{ .GET, foo }),
+    }, .{
         .error_handler = struct {
             fn handleError(req: *NotFound, resp: Response([]u8)) void {
                 req.resp = resp;
@@ -480,12 +530,18 @@ test "not found" {
     router.resolve(.GET, "/not_found", &notFound, &[_]kv.KeyValue{});
 
     try std.testing.expectEqual(.not_found, notFound.resp.?.status);
-    try std.testing.expectEqualStrings("404 Not Found", notFound.resp.?.content.string);
+    try std.testing.expectEqualStrings("404 Not Found", notFound.resp.?.body_content);
+
+    // for POST is no tree
+    router.resolve(.POST, "/not_found", &notFound, &[_]kv.KeyValue{});
+
+    try std.testing.expectEqual(.not_found, notFound.resp.?.status);
+    try std.testing.expectEqualStrings("404 Not Found", notFound.resp.?.body_content);
 }
 
 test "bad request" {
     const BadRequest = struct {
-        resp: ?Response([]u8) = null,
+        status: std.http.Status = .ok,
         was_called: bool = false,
     };
 
@@ -496,12 +552,13 @@ test "bad request" {
     }.foo;
 
     const router = try NewRouter(*BadRequest).init(std.testing.allocator, .{
-        Route("/foo", get(foo)),
+        Route("/foo", .{ .GET, foo }),
     }, .{
         .error_handler = struct {
             fn handleError(req: *BadRequest, resp: Response([]u8)) void {
-                std.testing.expectEqualStrings("400 Bad Request: error.BAD", resp.content.string) catch @panic("test failed");
-                req.resp = resp;
+                // std.debug.print("-- {s}\n", .{resp.body_content});
+                std.testing.expectEqualStrings("400 Bad Request: error.BAD", resp.body_content) catch @panic("test failed");
+                req.status = resp.status;
                 req.was_called = true;
             }
         }.handleError,
@@ -511,8 +568,8 @@ test "bad request" {
     var badRequest = BadRequest{};
     router.resolve(.GET, "/foo", &badRequest, &[_]kv.KeyValue{});
 
-    try std.testing.expectEqual(.bad_request, badRequest.resp.?.status);
     try std.testing.expectEqual(true, badRequest.was_called);
+    try std.testing.expectEqual(.bad_request, badRequest.status);
 }
 
 test "two routes for one path" {

@@ -15,7 +15,7 @@ without using "artificial" arguments and return values (like: request and respon
 
 - 🎯 zero dependencies
 - 🚀 (blazing) fast
-- 🛠️ easy to develop and write unit tests
+- 🛠️ easy to develop and to write unit test for `Handler`
 
 
 ## Example (code snippet) for using the Router with the std-Zig-library
@@ -23,12 +23,13 @@ without using "artificial" arguments and return values (like: request and respon
 ```zig
 const std = @import("std");
 const zart = @import("zart.zig");
+const Route = zart.Route;
 const arg = zart.handler.arg;
 
 // create a Router with Routes
 const router = try zart.NewRouter(http.Server.Request).init(allocator, .{
-     zart.Route("/users",.{ post(createUser), get(listUsers) }),
-     zart.Route("/users/:id", get(user)),
+     Route("/users/:id", .{ .GET, userByID }),
+     Route("/users", .{ get(listUsers), post(createUser) }),
 }, .{
     .Extractor = zart.server.JsonExtractor,
     .error_handler = zart.server.ErrorHandler.handleError,
