@@ -4,51 +4,53 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const lib = b.addStaticLibrary(.{
-        .name = "zart",
+    const zart = b.createModule(.{
         .root_source_file = b.path("src/zart.zig"),
         .target = target,
         .optimize = optimize,
     });
-    b.installArtifact(lib);
 
-    const exe = b.addExecutable(.{
-        .name = "zart",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    b.installArtifact(exe);
-
-    const run_cmd = b.addRunArtifact(exe);
-
-    run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
-
-    const run_step = b.step("run", "Run the app");
-    run_step.dependOn(&run_cmd.step);
-
-    // const lib_unit_tests = b.addTest(.{
-    //     .name = "zart",
-    //     .root_source_file = b.path("src/zart.zig"),
-    //     .target = target,
-    //     .optimize = optimize,
-    // });
     //
-    // const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
-
-    const exe_unit_tests = b.addTest(.{
-        .name = "zart",
+    // --- Unit-Tests ---
+    //
+    const zart_unit_tests = b.addTest(.{
+        .name = "zart_unit_tests",
         .root_source_file = b.path("src/zart.zig"),
-        .target = target,
-        .optimize = optimize,
     });
+    // create an executable
+    // b.installArtifact(zart_unit_tests);
 
-    const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
+    const run_test = b.addRunArtifact(zart_unit_tests);
+    // run_test.step.dependOn(b.getInstallStep());
 
-    const test_step = b.step("test", "Run unit tests");
-    // test_step.dependOn(&run_lib_unit_tests.step);
-    test_step.dependOn(&run_exe_unit_tests.step);
+    const test_step = b.step("test", "Run ZART unit tests");
+    test_step.dependOn(&run_test.step);
+
+    //
+    // --- Examples ---
+    //
+    const examples = [_]struct {
+        file: []const u8,
+        name: []const u8,
+    }{
+        .{ .file = "examples/std/main.zig", .name = "zart_std" },
+    };
+
+    for (examples) |ex| {
+        const example = b.addExecutable(.{
+            .name = ex.name,
+            .target = target,
+            .optimize = optimize,
+            .root_source_file = b.path(ex.file),
+        });
+        example.root_module.addImport("zart", zart);
+        // create an executable
+        b.installArtifact(example);
+
+        const run_cmd = b.addRunArtifact(example);
+        run_cmd.step.dependOn(b.getInstallStep());
+
+        const run_step = b.step(ex.name, ex.file);
+        run_step.dependOn(&run_cmd.step);
+    }
 }

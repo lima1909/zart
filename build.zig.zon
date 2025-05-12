@@ -1,8 +1,12 @@
 .{
-    .name = "zart",
+    .name = .zart,
+    .fingerprint = 0x26b290a2c8391771,
     .version = "0.0.0",
+    .minimum_zig_version = "0.14.0",
     .dependencies = .{},
     .paths = .{
+        "README.md",
+        "LICENSE",
         "build.zig",
         "build.zig.zon",
         "src",

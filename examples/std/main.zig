@@ -1,7 +1,7 @@
 const std = @import("std");
 const http = std.http;
 
-const zart = @import("zart.zig");
+const zart = @import("zart");
 const arg = zart.handler.arg;
 const Route = zart.Route;
 const get = zart.router.get;

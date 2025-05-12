@@ -20,6 +20,14 @@ without using "artificial" arguments and return values (like: request and respon
 
 ## Example (code snippet) for using the Router with the std-Zig-library
 
+See the [examples](https://github.com/lima1909/zart/tree/master/examples) folder for examples.
+
+You can run the example with the command:
+
+```bash
+$ zig build zart_std
+```
+
 ```zig
 const std = @import("std");
 const zart = @import("zart.zig");
