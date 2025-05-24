@@ -2,13 +2,14 @@ const std = @import("std");
 
 const Allocator = std.mem.Allocator;
 const Request = std.http.Server.Request;
+const Method = std.http.Method;
 const Connection = std.net.Server.Connection;
 
 const KeyValue = @import("kv.zig").KeyValue;
 const Response = @import("handler.zig").Response;
 const Router = @import("router.zig").Router;
 
-pub fn handleConnection(App: type, router: *const Router(App, Request), conn: Connection) !void {
+pub fn handleConnection(App: type, router: *const Router(App, Request, Method), conn: Connection) !void {
     defer conn.stream.close();
 
     var buffer: [4096]u8 = undefined;

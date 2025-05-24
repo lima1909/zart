@@ -22,10 +22,14 @@ without using "artificial" arguments and return values (like: request and respon
 
 See the [examples](https://github.com/lima1909/zart/tree/master/examples) folder for examples.
 
-You can run the example with the command:
+You can run the examples with the commands:
 
 ```bash
-$ zig build zart_std
+#  an example with zig std implementation
+$ zig build std
+
+#  an example with zap
+$ zig build zap
 ```
 
 ```zig
@@ -35,28 +39,30 @@ const Route = zart.Route;
 const arg = zart.handler.arg;
 
 // create a Router with Routes
-const router = try zart.NewRouter(http.Server.Request).init(allocator, .{
-     Route("/users/:id", .{ .GET, userByID }),
-     Route("/users", .{ get(listUsers), post(createUser) }),
-}, .{
-    .Extractor = zart.server.JsonExtractor,
-    .error_handler = zart.server.ErrorHandler.handleError,
-});
+const router = try zart.NewRouter(http.Server.Request)
+   .withConfig(.{
+       .Extractor = zart.server.JsonExtractor,
+       .error_handler = zart.server.ErrorHandler.handleError,
+   })
+   .init(
+       allocator,
+   .{
+       Route("/users/:id", .{ .GET, userByID }),
+       Route("/users", .{ get(listUsers), post(createUser) }),
+   },
+);
 defer router.deinit();
 
 // very simple HTTP server from the std library
 const addr = try std.net.Address.resolveIp("127.0.0.1", 8080);
 var listener = try addr.listen(.{ .reuse_address = true });
+defer listener.deinit();
 std.debug.print("Listening on {}\n", .{addr});
 
 while (true) {
    // handle connection with routing
     try zart.server.handleConnection(void, &router, try listener.accept());
 }
-
-// possible functions args: the original Request, URL Parameter and Query and a Body from a User. 
-// the result is the created User.
-fn createUser(r: http.Server.Request, p: arg.Params, q: arg.Query, b: arg.B(User)) !Response(User) { }
 ```
 
 ## Handler
@@ -84,6 +90,10 @@ fn createUserWithError() !Response(User) {
 fn renameUser(user: B(User)) User {
     return .{ .name = "new name" };
 }
+
+// possible functions args: the original Request, URL Parameter and Query and a Body from a User. 
+// the result is the created User.
+fn createUser(r: http.Server.Request, p: arg.Params, q: arg.Query, b: arg.B(User)) !Response(User) { }
 ```
 
 ### Arguments

@@ -1,3 +1,7 @@
+//!
+//! Run:  zig build std
+//!
+
 const std = @import("std");
 const http = std.http;
 
@@ -9,17 +13,23 @@ const post = zart.router.post;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const router = try zart.NewRouter(http.Server.Request).init(allocator, .{
-        Route("/user/:id", .{ .GET, user }),
-        Route("/value", .{ get(value), post(value) }),
-        Route("/", .{get(staticStr)}),
-        Route("/number", .{get(staticNumber)}),
-    }, .{
-        .Extractor = zart.server.JsonExtractor,
-        .error_handler = zart.server.ErrorHandler.handleError,
-    });
+    const router = try zart.NewRouter(http.Server.Request)
+        .withConfig(.{
+            .Extractor = zart.server.JsonExtractor,
+            .error_handler = zart.server.ErrorHandler.handleError,
+        })
+        .init(
+        allocator,
+        .{
+            Route("/user/:id", .{ .GET, user }),
+            Route("/value", .{ get(value), post(value) }),
+            Route("/", .{get(staticStr)}),
+            Route("/number", .{get(staticNumber)}),
+        },
+    );
     defer router.deinit();
 
     const addr = try std.net.Address.resolveIp("127.0.0.1", 8080);
