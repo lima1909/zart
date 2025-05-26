@@ -5,11 +5,9 @@ const Request = std.http.Server.Request;
 const Method = std.http.Method;
 const Connection = std.net.Server.Connection;
 
-const KeyValue = @import("kv.zig").KeyValue;
-const Response = @import("handler.zig").Response;
-const Router = @import("router.zig").Router;
+const zart = @import("zart");
 
-pub fn handleConnection(App: type, router: *const Router(App, Request, Method), conn: Connection) !void {
+pub fn handleConnection(App: type, router: *const zart.Router(App, Request, Method), conn: Connection) !void {
     defer conn.stream.close();
 
     var buffer: [4096]u8 = undefined;
@@ -20,7 +18,7 @@ pub fn handleConnection(App: type, router: *const Router(App, Request, Method), 
     const indexQuery = std.mem.indexOfPos(u8, target, 0, "?");
     const path = if (indexQuery) |i| target[0..i] else target;
 
-    var vars: [7]KeyValue = undefined;
+    var vars: [7]zart.KeyValue = undefined;
     const queryStr = if (indexQuery) |i| target[i + 1 ..] else null;
     const size: usize = if (queryStr) |s| parseQueryString(s, &vars) else 0;
 
@@ -37,7 +35,7 @@ pub const JsonExtractor = struct {
         return try std.json.parseFromSliceLeaky(T, allocator, try reader.readAllAlloc(allocator, 10 * 1024), .{});
     }
 
-    pub fn response(T: type, allocator: Allocator, req: Request, resp: Response(T)) !void {
+    pub fn response(T: type, allocator: Allocator, req: Request, resp: zart.Response(T)) !void {
         const content = try std.json.stringifyAlloc(allocator, resp.body_content, .{});
         var r = req;
         try r.respond(content, .{ .status = resp.status });
@@ -45,19 +43,19 @@ pub const JsonExtractor = struct {
 };
 
 pub const ErrorHandler = struct {
-    pub fn handleError(r: Request, resp: Response([]u8)) void {
+    pub fn handleError(r: Request, resp: zart.Response([]u8)) void {
         var req = r;
         req.respond(resp.body_content, .{ .status = resp.status }) catch |err| {
             std.debug.print("error by sending the response: {} ({s})\n", .{ err, @tagName(resp.status) });
         };
     }
-};
+}.handleError;
 
 // URL encode
 // const queryString = try allocator.dupe(u8, input);
 // defer allocator.free(queryString);
 // const q = std.Uri.percentDecodeInPlace(queryString);
-pub fn parseQueryString(input: []const u8, query: []KeyValue) usize {
+pub fn parseQueryString(input: []const u8, query: []zart.KeyValue) usize {
     if (input.len == 0) {
         return 0;
     }
@@ -67,7 +65,7 @@ pub fn parseQueryString(input: []const u8, query: []KeyValue) usize {
     var iter = std.mem.splitScalar(u8, input, '&');
     while (iter.next()) |pair| {
         if (std.mem.indexOfScalarPos(u8, pair, 0, '=')) |sep| {
-            const v = KeyValue{ .key = pair[0..sep], .value = pair[sep + 1 ..] };
+            const v = zart.KeyValue{ .key = pair[0..sep], .value = pair[sep + 1 ..] };
             query[size] = v;
             size += 1;
         }
@@ -77,7 +75,7 @@ pub fn parseQueryString(input: []const u8, query: []KeyValue) usize {
 }
 
 test "parse query string" {
-    var query: [7]KeyValue = undefined;
+    var query: [7]zart.KeyValue = undefined;
 
     try std.testing.expectEqual(0, parseQueryString("", &query));
 

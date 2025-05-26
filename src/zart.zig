@@ -8,16 +8,12 @@ pub const Response = handler.Response;
 
 pub const KeyValue = @import("kv.zig").KeyValue;
 
-pub const server = @import("server.zig");
-
 test {
     _ = @import("./handler.zig");
     _ = @import("./kv.zig");
     _ = @import("./node.zig");
     _ = @import("./router.zig");
     _ = @import("./tree.zig");
-
-    _ = @import("./server.zig");
 }
 
 // - find first wildcard = parsePath() -> (prefix, suffix, KEY) OR None OR Error

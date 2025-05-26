@@ -5,6 +5,8 @@
 const std = @import("std");
 const http = std.http;
 
+const server = @import("server.zig");
+
 const zart = @import("zart");
 const arg = zart.handler.arg;
 const Route = zart.Route;
@@ -18,8 +20,8 @@ pub fn main() !void {
 
     const router = try zart.NewRouter(http.Server.Request)
         .withConfig(.{
-            .Extractor = zart.server.JsonExtractor,
-            .error_handler = zart.server.ErrorHandler.handleError,
+            .Extractor = server.JsonExtractor,
+            .error_handler = server.ErrorHandler,
         })
         .init(
         allocator,
@@ -41,7 +43,8 @@ pub fn main() !void {
     std.debug.print("Listening on {}\n", .{addr});
 
     while (true) {
-        try zart.server.handleConnection(void, &router, try listener.accept());
+        // handle BLOCKING connection
+        try server.handleConnection(void, &router, try listener.accept());
     }
 }
 
