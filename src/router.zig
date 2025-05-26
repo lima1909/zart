@@ -66,7 +66,7 @@ pub fn Router(App: type, Request: type, Method: type) type {
     const defaultErrorHandler = struct {
         fn handleError(_: Request, resp: Response([]u8)) void {
             const status = @tagName(resp.status);
-            std.debug.print("error: {any} ({s})\n", .{ resp.body_content, status });
+            std.debug.print("error: {s} ({s})\n", .{ resp.body_content, status });
         }
     }.handleError;
 
