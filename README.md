@@ -24,17 +24,19 @@ See the [examples](https://github.com/lima1909/zart/tree/master/examples) folder
 
 You can run the examples with the commands:
 
-### Example with ZIG std library
+- example with [ZAP](https://github.com/zigzap/zap)
+
+```bash
+$ zig build zap
+```
+
+- example with ZIG std library
 
 ```bash
 $ zig build std
 ```
 
-### Example with [ZAP](https://github.com/zigzap/zap)
-
-```bash
-$ zig build zap
-```
+- example to define a Router
 
 ```zig
 // create a Router with Routes
