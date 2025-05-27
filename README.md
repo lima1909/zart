@@ -1,6 +1,6 @@
 <div align="center">
 
-# ZART: a router written in ⚡ZIG ⚡
+# ZART: a Router written in ⚡ZIG ⚡
 
 [![Build Status](https://img.shields.io/github/actions/workflow/status/lima1909/zart/ci.yaml?style=for-the-badge)](https://github.com/lima1909/zart/actions)
 ![License](https://img.shields.io/github/license/lima1909/zart?style=for-the-badge)
@@ -8,14 +8,14 @@
 
 </div>
 
-ZART stands for: `Zig Adaptive Radix Tree` and is an router based on a radix tree.
+ZART stands for: `Zig Adaptive Radix Tree` and is an `Router` based on a radix tree.
 
 This project is an experiment, with the aim of integrating HTTP handlers as  "normal" functions, so it is easy to write tests,
 without using "artificial" arguments and return values (like: request and response).
 
 - 🎯 zero dependencies
 - 🚀 (blazing) fast
-- 🛠️ easy to develop and to write unit test for `Handler`
+- 🛠️ easy to develop `Handler` and to write unit test 
 
 
 ## Example (code snippet) for using the Router with the std-Zig-library
@@ -24,25 +24,24 @@ See the [examples](https://github.com/lima1909/zart/tree/master/examples) folder
 
 You can run the examples with the commands:
 
-```bash
-#  an example with zig std implementation
-$ zig build std
+### Example with ZIG std library
 
-#  an example with zap
+```bash
+$ zig build std
+```
+
+### Example with [ZAP](https://github.com/zigzap/zap)
+
+```bash
 $ zig build zap
 ```
 
 ```zig
-const std = @import("std");
-const zart = @import("zart.zig");
-const Route = zart.Route;
-const arg = zart.handler.arg;
-
 // create a Router with Routes
 const router = try zart.NewRouter(http.Server.Request)
    .withConfig(.{
-       .Extractor = zart.server.JsonExtractor,
-       .error_handler = zart.server.ErrorHandler.handleError,
+       .Extractor = JsonExtractor,
+       .error_handler = ErrorHandler.handleError,
    })
    .init(
        allocator,
@@ -51,18 +50,8 @@ const router = try zart.NewRouter(http.Server.Request)
        Route("/users", .{ get(listUsers), post(createUser) }),
    },
 );
+
 defer router.deinit();
-
-// very simple HTTP server from the std library
-const addr = try std.net.Address.resolveIp("127.0.0.1", 8080);
-var listener = try addr.listen(.{ .reuse_address = true });
-defer listener.deinit();
-std.debug.print("Listening on {}\n", .{addr});
-
-while (true) {
-   // handle connection with routing
-    try zart.server.handleConnection(void, &router, try listener.accept());
-}
 ```
 
 ## Handler
