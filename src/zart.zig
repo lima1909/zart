@@ -1,16 +1,18 @@
 pub const router = @import("router.zig");
 pub const Route = router.Route;
-pub const Router = router.Router;
 pub const NewRouter = router.NewRouter;
+pub const Router = router.Router;
+pub const HttpError = router.HttpError;
 
 pub const handler = @import("handler.zig");
-pub const Response = handler.Response;
+pub const ResponseWriter = handler.ResponseWriter;
 
 pub const KeyValue = @import("kv.zig").KeyValue;
 
 test {
     _ = @import("./handler.zig");
     _ = @import("./kv.zig");
+    _ = @import("./middleware.zig");
     _ = @import("./node.zig");
     _ = @import("./router.zig");
     _ = @import("./tree.zig");

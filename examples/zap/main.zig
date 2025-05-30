@@ -4,7 +4,7 @@
 const std = @import("std");
 const zap = @import("zap");
 const zart = @import("zart");
-const KeyValue = @import("zart").kv.KeyValue;
+const KeyValue = zart.KeyValue;
 
 pub const JsonExtractor = struct {
     // create parameter objects
@@ -13,18 +13,19 @@ pub const JsonExtractor = struct {
     }
 
     // create response strings
-    pub fn response(T: type, allocator: std.mem.Allocator, r: zap.Request, resp: zart.Response(T)) !void {
-        const content = try std.json.stringifyAlloc(allocator, resp.body_content, .{});
+    pub fn response(T: type, allocator: std.mem.Allocator, r: zap.Request, w: *zart.ResponseWriter, resp: T) !void {
+        const content = try std.json.stringifyAlloc(allocator, resp, .{});
         try r.sendJson(content);
+        r.setStatus(@enumFromInt(@intFromEnum(w.status)));
     }
 };
 
 // create your own error-handler
 pub const ErrorHandler = struct {
-    pub fn handleError(r: zap.Request, resp: zart.Response([]u8)) void {
-        r.setStatus(@enumFromInt(@intFromEnum(resp.status)));
-        r.sendBody(resp.body_content) catch |err| {
-            std.debug.print("error by sending the response: {} ({s})\n", .{ err, @tagName(resp.status) });
+    pub fn handleError(r: zap.Request, err: zart.HttpError) void {
+        r.setStatus(@enumFromInt(@intFromEnum(err.status)));
+        r.sendBody(err.message) catch |e| {
+            std.debug.print("error by sending the response: {} ({s})\n", .{ e, @tagName(err.status) });
         };
     }
 }.handleError;
@@ -59,8 +60,7 @@ pub fn main() !void {
         .init(
         allocator,
         .{
-            zart.Route("/", .{ .GET, index }),
-            zart.Route("/", .{ .POST, index }),
+            zart.Route("/", .{ .{ .GET, index }, .{ .POST, index } }),
             zart.Route("/str", .{ .GET, staticStr }),
         },
     );

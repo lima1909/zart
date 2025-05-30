@@ -35,18 +35,18 @@ pub const JsonExtractor = struct {
         return try std.json.parseFromSliceLeaky(T, allocator, try reader.readAllAlloc(allocator, 10 * 1024), .{});
     }
 
-    pub fn response(T: type, allocator: Allocator, req: Request, resp: zart.Response(T)) !void {
-        const content = try std.json.stringifyAlloc(allocator, resp.body_content, .{});
+    pub fn response(T: type, allocator: Allocator, req: Request, w: *zart.ResponseWriter, resp: T) !void {
+        const content = try std.json.stringifyAlloc(allocator, resp, .{});
         var r = req;
-        try r.respond(content, .{ .status = resp.status });
+        try r.respond(content, .{ .status = w.status });
     }
 };
 
 pub const ErrorHandler = struct {
-    pub fn handleError(r: Request, resp: zart.Response([]u8)) void {
+    pub fn handleError(r: Request, err: zart.HttpError) void {
         var req = r;
-        req.respond(resp.body_content, .{ .status = resp.status }) catch |err| {
-            std.debug.print("error by sending the response: {} ({s})\n", .{ err, @tagName(resp.status) });
+        req.respond(err.message, .{ .status = err.status }) catch |e| {
+            std.debug.print("error by sending the response: {} ({s})\n", .{ e, @tagName(err.status) });
         };
     }
 }.handleError;

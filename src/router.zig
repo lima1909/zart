@@ -2,22 +2,40 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const kv = @import("kv.zig");
-const Response = @import("handler.zig").Response;
 
 pub fn Config(Request: type) type {
     return struct {
-        parser: kv.parse = kv.matchitParser,
+        const ErrorHandler = *const fn (Request, HttpError) void;
+
+        error_handler: ?ErrorHandler = null,
+
         ///
         /// Signature for Extractor:
         ///   pub fn body(T: type, allocator: std.mem.Allocator, r: Request) !T
         ///   pub fn response(T: type, allocator: std.mem.Allocator, r: Request, resp: Response(T)) !void
         Extractor: type = void,
-        error_handler: ?*const fn (Request, Response([]u8)) void = null,
         ///
         /// set the Method enum if it is not from the std lib
         Method: type = std.http.Method,
+        ///
+        /// set the type of the Middleware-Context
+        MiddlewareContext: type = void,
+
+        parser: kv.parse = kv.matchitParser,
     };
 }
+
+pub const HttpError = struct {
+    status: std.http.Status,
+    message: []u8,
+
+    pub fn withStringMessage(buffer: []u8, status: std.http.Status, msg: []const u8, err: anyerror) HttpError {
+        return .{
+            .status = status,
+            .message = std.fmt.bufPrint(buffer, "{d} {s}: {}", .{ @intFromEnum(status), msg, err }) catch @constCast(msg),
+        };
+    }
+};
 
 /// A Route is a 'path' and one or more 'handles'
 /// A 'handles' is a 'method' and a 'hanlder function'
@@ -25,8 +43,8 @@ pub fn Config(Request: type) type {
 ///     Route('/users', .{ .GET, users })                            // one Handle
 ///     Route('/users', .{ .{ .GET, users }, .{ .POST, users }  })   // List of two Handles
 ///     Route('/users', .{ get(users), post(users) })                // List of two Handles
-pub fn Route(path: []const u8, handles: anytype) struct { path: []const u8, handles: @TypeOf(handles) } {
-    return .{ .path = path, .handles = handles };
+pub fn Route(path: []const u8, handlers: anytype) struct { path: []const u8, handles: @TypeOf(handlers) } {
+    return .{ .path = path, .handles = handlers };
 }
 
 fn Builder(Request: type) type {
@@ -40,12 +58,32 @@ fn Builder(Request: type) type {
             };
         }
 
-        pub fn init(self: Self, allocator: Allocator, routes: anytype) !Router(void, Request, self.config.Method) {
-            return try Router(void, Request, self.config.Method).init(allocator, null, routes, self.config);
+        pub fn init(self: Self, allocator: Allocator, routes: anytype) !Router(
+            void,
+            Request,
+            self.config.Method,
+            self.config.MiddlewareContext,
+        ) {
+            return try Router(
+                void,
+                Request,
+                self.config.Method,
+                self.config.MiddlewareContext,
+            ).init(allocator, null, routes, self.config);
         }
 
-        pub fn initWithApp(self: Self, allocator: Allocator, app: anytype, routes: anytype) !Router(@TypeOf(app), Request, self.config.Method) {
-            return try Router(@TypeOf(app), Request, self.config.Method).init(allocator, app, routes, self.config);
+        pub fn initWithApp(self: Self, allocator: Allocator, app: anytype, routes: anytype) !Router(
+            @TypeOf(app),
+            Request,
+            self.config.Method,
+            self.config.MiddlewareContext,
+        ) {
+            return try Router(
+                @TypeOf(app),
+                Request,
+                self.config.Method,
+                self.config.MiddlewareContext,
+            ).init(allocator, app, routes, self.config);
         }
     };
 }
@@ -55,33 +93,32 @@ pub fn NewRouter(Request: type) Builder(Request) {
     return Builder(Request){};
 }
 
-pub fn Router(App: type, Request: type, Method: type) type {
-    // NOT FOUND error
-    const NOT_FOUND = Response([]u8){
-        .status = .not_found,
-        .body_content = @constCast("404 Not Found"),
-    };
+pub fn Router(App: type, Request: type, Method: type, MiddlewareContext: type) type {
 
     // default error handler
-    const defaultErrorHandler = struct {
-        fn handleError(_: Request, resp: Response([]u8)) void {
-            const status = @tagName(resp.status);
-            std.debug.print("error: {s} ({s})\n", .{ resp.body_content, status });
+    const DefaultErrorHandler = struct {
+        fn handleError(_: Request, err: HttpError) void {
+            std.debug.print("error: {s} ({s})\n", .{ err.message, @tagName(err.status) });
         }
-    }.handleError;
+    };
 
     return struct {
+        const ResponseWriter = @import("handler.zig").ResponseWriter;
+        const Middleware = @import("middleware.zig").Middleware(MiddlewareContext, Request);
+        const Executor = @import("middleware.zig").Executor(MiddlewareContext, Request);
+
         const Self = @This();
 
         app: ?App,
         trees: Trees(App, Request, Method),
-        error_handler: *const fn (Request, Response([]u8)) void,
+        error_handler: Config(Request).ErrorHandler,
+        middlewars: []const Middleware = &.{},
 
         fn init(allocator: Allocator, app: ?App, routes: anytype, cfg: Config(Request)) !Self {
             var self = Self{
                 .app = app,
                 .trees = Trees(App, Request, Method){},
-                .error_handler = cfg.error_handler orelse defaultErrorHandler,
+                .error_handler = cfg.error_handler orelse DefaultErrorHandler.handleError,
             };
 
             inline for (routes) |r| {
@@ -113,10 +150,13 @@ pub fn Router(App: type, Request: type, Method: type) type {
             self.trees.deinit();
         }
 
+        pub fn withMiddlewares(self: *Self, middlewares: []const Middleware) void {
+            self.middlewars = middlewares;
+        }
+
         pub fn resolve(self: *const Self, method: Method, path: []const u8, req: Request, query: []const kv.KeyValue) void {
             const tree = self.trees.read(method) orelse {
-                self.error_handler(req, NOT_FOUND);
-                return;
+                return self.error_handler(req, .{ .status = .method_not_allowed, .message = @constCast("405 Method Not Allowed") });
             };
 
             const matched = tree.resolve(path);
@@ -126,17 +166,21 @@ pub fn Router(App: type, Request: type, Method: type) type {
                 var arena = std.heap.ArenaAllocator.init(gpa.allocator());
                 defer arena.deinit();
 
-                handler.handle(self.app, req, query, &matched.kvs, arena.allocator()) catch |err| {
-                    var buffer: [50]u8 = undefined;
-                    self.error_handler(req, .{
-                        .status = .bad_request,
-                        .body_content = std.fmt.bufPrint(&buffer, "{s}{}", .{ "400 Bad Request: ", err }) catch @constCast("400 Bad Request"),
-                    });
+                const exec = Executor{
+                    .context = {},
+                    .request = &req,
+                    .middlewares = self.middlewars,
                 };
-                return;
+                _ = exec;
+
+                var w = ResponseWriter{};
+                return handler.handle(arena.allocator(), self.app, req, &w, query, &matched.kvs) catch |err| {
+                    var buffer: [50]u8 = undefined;
+                    self.error_handler(req, HttpError.withStringMessage(&buffer, .bad_request, "Bad Request", err));
+                };
             }
 
-            self.error_handler(req, NOT_FOUND);
+            self.error_handler(req, .{ .status = .not_found, .message = @constCast("404 Not Found") });
         }
     };
 }
@@ -508,7 +552,7 @@ test "request with two args" {
 }
 
 test "not found" {
-    const NotFound = struct { resp: ?Response([]u8) = null };
+    const NotFound = struct { err: ?HttpError = null };
 
     const foo = struct {
         fn foo() void {
@@ -519,8 +563,8 @@ test "not found" {
     const router = try NewRouter(*NotFound)
         .withConfig(.{
             .error_handler = struct {
-                fn handleError(req: *NotFound, resp: Response([]u8)) void {
-                    req.resp = resp;
+                fn handleError(req: *NotFound, err: HttpError) void {
+                    req.err = err;
                 }
             }.handleError,
         })
@@ -535,14 +579,14 @@ test "not found" {
     var notFound = NotFound{};
     router.resolve(.GET, "/not_found", &notFound, &[_]kv.KeyValue{});
 
-    try std.testing.expectEqual(.not_found, notFound.resp.?.status);
-    try std.testing.expectEqualStrings("404 Not Found", notFound.resp.?.body_content);
+    try std.testing.expectEqual(.not_found, notFound.err.?.status);
+    try std.testing.expectEqualStrings("404 Not Found", notFound.err.?.message);
 
     // for POST is no tree
     router.resolve(.POST, "/not_found", &notFound, &[_]kv.KeyValue{});
 
-    try std.testing.expectEqual(.not_found, notFound.resp.?.status);
-    try std.testing.expectEqualStrings("404 Not Found", notFound.resp.?.body_content);
+    try std.testing.expectEqual(.method_not_allowed, notFound.err.?.status);
+    try std.testing.expectEqualStrings("405 Method Not Allowed", notFound.err.?.message);
 }
 
 test "bad request" {
@@ -560,9 +604,9 @@ test "bad request" {
     const router = try NewRouter(*BadRequest)
         .withConfig(.{
             .error_handler = struct {
-                fn handleError(req: *BadRequest, resp: Response([]u8)) void {
-                    std.testing.expectEqualStrings("400 Bad Request: error.BAD", resp.body_content) catch @panic("test failed");
-                    req.status = resp.status;
+                fn handleError(req: *BadRequest, err: HttpError) void {
+                    std.testing.expectEqualStrings("400 Bad Request: error.BAD", err.message) catch @panic("test failed");
+                    req.status = err.status;
                     req.was_called = true;
                 }
             }.handleError,
@@ -602,4 +646,47 @@ test "two routes for one path" {
     try std.testing.expectEqual(4, i);
     router.resolve(.POST, "/foo", &i, &[_]kv.KeyValue{});
     try std.testing.expectEqual(5, i);
+}
+
+test "with Middleware" {
+    const foo = struct {
+        fn foo(i: *i32) void {
+            i.* += 1;
+        }
+    }.foo;
+
+    const R = Router(void, *i32, std.http.Method, void);
+    const M = struct {
+        const Self = @This();
+
+        pub fn execute(ptr: *anyopaque, c: *void, r: *const *i32, w: *R.ResponseWriter, exec: *R.Executor) anyerror!void {
+            _ = ptr;
+            _ = c;
+            _ = r;
+            _ = w;
+
+            try exec.next();
+        }
+
+        fn middleware(self: *Self) R.Middleware {
+            return .{
+                .ptr = self,
+                .executeFn = execute,
+            };
+        }
+    };
+
+    var m = M{};
+    var router = try NewRouter(*i32).init(
+        std.testing.allocator,
+        .{
+            Route("/foo", .{get(foo)}),
+        },
+    );
+    router.withMiddlewares(&[_]R.Middleware{m.middleware()});
+    defer router.deinit();
+
+    var i: i32 = 3;
+    router.resolve(.GET, "/foo", &i, &[_]kv.KeyValue{});
+    try std.testing.expectEqual(4, i);
 }

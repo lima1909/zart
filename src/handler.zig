@@ -8,17 +8,24 @@ const Params = arg.Params;
 const Query = arg.Query;
 const Body = arg.Body;
 
-/// The main interface for creating handler functions
+/// The main interface for creating a handler function
 pub fn Handler(App: type, Request: type) type {
     return struct {
-        handle: *const fn (app: ?App, req: Request, query: []const KeyValue, params: []const KeyValue, allocator: Allocator) anyerror!void,
+        handle: *const fn (
+            allocator: Allocator,
+            app: ?App,
+            req: Request,
+            w: *ResponseWriter,
+            query: []const KeyValue,
+            params: []const KeyValue,
+        ) anyerror!void,
     };
 }
 
-/// Factory to create an Handler for a given function.
+/// Factory to create a Handler for a given function.
 pub fn handlerFromFn(App: type, Request: type, func: anytype, Extractor: type) Handler(App, Request) {
     const h = struct {
-        fn handle(app: ?App, req: Request, query: []const KeyValue, params: []const KeyValue, allocator: Allocator) !void {
+        fn handle(allocator: Allocator, app: ?App, req: Request, w: *ResponseWriter, query: []const KeyValue, params: []const KeyValue) !void {
             // the switch doesn't work, if App and Request have the same type!
             const NoApp = struct {};
             const AppType: type = if (App == void and Request == void) NoApp else App;
@@ -36,6 +43,7 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, Extractor: type) H
                         Allocator => allocator,
                         AppType => if (app) |a| a else return error.NoAppDefined,
                         Request => req,
+                        *ResponseWriter => w,
                         Params => Params{ .kvs = params },
                         Query => Query{ .kvs = query },
                         Body => try Extractor.body(std.json.Value, allocator, req),
@@ -66,45 +74,24 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, Extractor: type) H
                 @call(.auto, func, args);
 
             // check the return type
-            comptime var rty = @TypeOf(result);
-            const resp = blk: switch (@typeInfo(rty)) {
+            const rty = @TypeOf(result);
+            switch (@typeInfo(rty)) {
                 // error_union can't be nested, so we can return here
                 // do nothing
                 .void, .noreturn, .error_union => return,
-                // the given result is already a Response
-                .@"struct" => if (@hasField(rty, "body_content") and @hasField(rty, "status")) {
-                    // type of the wrapped object
-                    rty = @FieldType(rty, "body_content");
-                    break :blk result;
-                } else {
-                    // wrap the given object into Response
-                    break :blk Response(rty){ .body_content = result };
-                },
-                // status
-                .@"enum" => {
-                    rty = void;
-                    break :blk Response(void){ .status = result, .body_content = {} };
-                },
-                // string
-                .pointer => |p| if (p.child == u8)
-                    Response(rty){ .body_content = result },
-                else => @compileError("Not supported return type: " ++ @typeName(rty)),
-            };
-
-            try Extractor.response(rty, allocator, req, resp);
+                else => try Extractor.response(rty, allocator, req, w, result),
+            }
         }
     };
 
     return Handler(App, Request){ .handle = h.handle };
 }
 
-// The response with Content (Body)
-pub fn Response(S: type) type {
-    return struct {
-        status: http.Status = .ok,
-        body_content: S,
-    };
-}
+// The response writer to set the Status or change the Headers.
+pub const ResponseWriter = struct {
+    status: std.http.Status = .ok,
+    header: []const KeyValue = &.{},
+};
 
 const ParamTag = struct {};
 const QueryTag = struct {};
@@ -279,7 +266,7 @@ test "handler with no args and void return" {
         void,
     );
 
-    _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);
+    _ = try h.handle(std.testing.allocator, null, undefined, undefined, &[_]KeyValue{}, &[_]KeyValue{});
 }
 
 test "handler with no args and error_union with void return" {
@@ -292,7 +279,7 @@ test "handler with no args and error_union with void return" {
         void,
     );
 
-    _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);
+    _ = try h.handle(std.testing.allocator, null, undefined, undefined, &[_]KeyValue{}, &[_]KeyValue{});
 }
 
 test "handler response with body" {
@@ -307,19 +294,20 @@ test "handler response with body" {
             }
         }.getUser,
         struct {
-            fn response(T: type, allocator: Allocator, _: void, resp: Response(T)) !void {
-                const s = try std.json.stringifyAlloc(allocator, resp.body_content, .{});
+            fn response(T: type, allocator: Allocator, _: void, w: *ResponseWriter, resp: T) !void {
+                const s = try std.json.stringifyAlloc(allocator, resp, .{});
                 defer allocator.free(s);
 
                 try std.testing.expectEqualStrings(
                     \\{"id":42,"name":"its me"}
                 , s);
-                try std.testing.expectEqual(.ok, resp.status);
+                try std.testing.expectEqual(.ok, w.status);
             }
         },
     );
 
-    _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);
+    var rw = ResponseWriter{};
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{});
 }
 
 test "handle static string" {
@@ -332,14 +320,15 @@ test "handle static string" {
             }
         }.string,
         struct {
-            fn response(T: type, _: Allocator, _: void, resp: Response(T)) !void {
-                try std.testing.expectEqualStrings("its me", resp.body_content);
-                try std.testing.expectEqual(.ok, resp.status);
+            fn response(T: type, _: Allocator, _: void, w: *ResponseWriter, resp: T) !void {
+                try std.testing.expectEqualStrings("its me", resp);
+                try std.testing.expectEqual(.ok, w.status);
             }
         },
     );
 
-    _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);
+    var rw = ResponseWriter{};
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{});
 }
 
 test "handle error!static string" {
@@ -352,14 +341,15 @@ test "handle error!static string" {
             }
         }.string,
         struct {
-            fn response(T: type, _: Allocator, _: void, resp: Response(T)) !void {
-                try std.testing.expectEqualStrings("with error", resp.body_content);
-                try std.testing.expectEqual(.ok, resp.status);
+            fn response(T: type, _: Allocator, _: void, w: *ResponseWriter, resp: T) !void {
+                try std.testing.expectEqualStrings("with error", resp);
+                try std.testing.expectEqual(.ok, w.status);
             }
         },
     );
 
-    _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);
+    var rw = ResponseWriter{};
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{});
 }
 
 test "handle string with allocator" {
@@ -373,16 +363,17 @@ test "handle string with allocator" {
             }
         }.string,
         struct {
-            fn response(T: type, alloc: Allocator, _: void, resp: Response(T)) !void {
-                defer alloc.free(resp.body_content);
+            fn response(T: type, alloc: Allocator, _: void, w: *ResponseWriter, resp: T) !void {
+                defer alloc.free(resp);
 
-                try std.testing.expectEqualStrings("<html>Hello me</html>", resp.body_content);
-                try std.testing.expectEqual(.ok, resp.status);
+                try std.testing.expectEqualStrings("<html>Hello me</html>", resp);
+                try std.testing.expectEqual(.ok, w.status);
             }
         },
     );
 
-    _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{.{ .key = "name", .value = "me" }}, std.testing.allocator);
+    var rw = ResponseWriter{};
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{.{ .key = "name", .value = "me" }});
 }
 test "handler with Response" {
     const User = struct { id: i32, name: []const u8 };
@@ -391,21 +382,23 @@ test "handler with Response" {
         void,
         void,
         struct {
-            fn createUser() Response(User) {
-                return .{ .status = .created, .body_content = .{ .id = 42, .name = "its me" } };
+            fn createUser(w: *ResponseWriter) User {
+                w.status = .created;
+                return .{ .id = 42, .name = "its me" };
             }
         }.createUser,
         struct {
-            fn response(T: type, _: Allocator, _: void, resp: Response(T)) !void {
-                const u: User = resp.body_content;
+            fn response(T: type, _: Allocator, _: void, w: *ResponseWriter, resp: T) !void {
+                const u: User = resp;
                 try std.testing.expectEqual(42, u.id);
                 try std.testing.expectEqualStrings("its me", u.name);
-                try std.testing.expectEqual(.created, resp.status);
+                try std.testing.expectEqual(.created, w.status);
             }
         },
     );
 
-    _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);
+    var rw = ResponseWriter{};
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{});
 }
 
 test "handler with error!Response" {
@@ -415,21 +408,23 @@ test "handler with error!Response" {
         void,
         void,
         struct {
-            fn createUserWithError() !Response(User) {
-                return .{ .status = .created, .body_content = .{ .id = 45, .name = "other" } };
+            fn createUserWithError(w: *ResponseWriter) !User {
+                w.status = .created;
+                return .{ .id = 45, .name = "other" };
             }
         }.createUserWithError,
         struct {
-            fn response(T: type, _: Allocator, _: void, resp: Response(T)) !void {
-                const u: User = resp.body_content;
+            fn response(T: type, _: Allocator, _: void, w: *ResponseWriter, resp: T) !void {
+                const u: User = resp;
                 try std.testing.expectEqual(45, u.id);
                 try std.testing.expectEqualStrings("other", u.name);
-                try std.testing.expectEqual(.created, resp.status);
+                try std.testing.expectEqual(.created, w.status);
             }
         },
     );
 
-    _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);
+    var rw = ResponseWriter{};
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{});
 }
 
 test "handler with error!Response with List" {
@@ -439,44 +434,51 @@ test "handler with error!Response with List" {
         void,
         void,
         struct {
-            fn createUserWithError(alloc: Allocator) !Response(std.ArrayList(User)) {
+            fn createUserWithError(alloc: Allocator, w: *ResponseWriter) !std.ArrayList(User) {
                 var user_list = std.ArrayList(User).init(alloc);
                 try user_list.append(.{ .id = 1, .name = "One" });
                 try user_list.append(.{ .id = 2, .name = "Two" });
-                return .{ .status = .created, .body_content = user_list };
+
+                w.status = .created;
+                return user_list;
             }
         }.createUserWithError,
         struct {
-            fn response(T: type, _: Allocator, _: void, resp: Response(T)) !void {
-                const ul: std.ArrayList(User) = resp.body_content;
+            fn response(T: type, _: Allocator, _: void, w: *ResponseWriter, resp: T) !void {
+                const ul: std.ArrayList(User) = resp;
                 defer ul.deinit();
 
                 const user1 = ul.items[0];
                 try std.testing.expectEqual(1, user1.id);
                 try std.testing.expectEqualStrings("One", user1.name);
-                try std.testing.expectEqual(.created, resp.status);
+                try std.testing.expectEqual(.created, w.status);
             }
         },
     );
 
-    _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);
+    var rw = ResponseWriter{};
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{});
+    try std.testing.expectEqual(.created, rw.status);
 }
 
-test "handler with return state" {
+test "handler with setting the http-state" {
     const h = handlerFromFn(
         void,
         void,
         struct {
-            fn createUser() std.http.Status {
-                return .created;
+            fn createUser(w: *ResponseWriter) void {
+                w.status = .created;
+                return;
             }
         }.createUser,
         struct {
-            fn response(T: type, _: Allocator, _: void, resp: Response(T)) !void {
-                try std.testing.expectEqual(.created, resp.status);
+            fn response(T: type, _: Allocator, _: void, w: *ResponseWriter, _: T) !void {
+                try std.testing.expectEqual(.created, w.status);
             }
         },
     );
 
-    _ = try h.handle(null, undefined, &[_]KeyValue{}, &[_]KeyValue{}, std.testing.allocator);
+    var rw = ResponseWriter{};
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{});
+    try std.testing.expectEqual(.created, rw.status);
 }

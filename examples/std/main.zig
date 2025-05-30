@@ -51,7 +51,7 @@ pub fn main() !void {
 const ID = struct { id: i32 };
 
 //
-// curl -X GET http://localhost:8080/user/42?foo=bar -d '{"id": 41}'
+// curl http://localhost:8080/user/42?foo=bar -d '{"id": 41}'
 //
 fn user(r: http.Server.Request, p: arg.Params, q: arg.Query, b: arg.B(ID)) ID {
     std.debug.print("Method: {}\n", .{r.head.method});
@@ -68,7 +68,8 @@ fn user(r: http.Server.Request, p: arg.Params, q: arg.Query, b: arg.B(ID)) ID {
 }
 
 //
-// curl -X GET http://localhost:8080/value -d '{"id": 41}'
+// curl http://localhost:8080/value -d '{"id": 41}'
+// curl -X POST http://localhost:8080/value -d '{"id": 41}'
 //
 fn value(b: arg.Body) !void {
     const obj = b.object;
@@ -86,6 +87,6 @@ fn staticStr() []const u8 {
 //
 // curl -X GET http://localhost:8080/number
 //
-fn staticNumber() zart.Response(i32) {
-    return .{ .body_content = 42 };
+fn staticNumber() i32 {
+    return 42;
 }
