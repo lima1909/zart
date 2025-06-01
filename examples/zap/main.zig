@@ -30,7 +30,7 @@ pub const ErrorHandler = struct {
     }
 }.handleError;
 
-var router: zart.Router(void, zap.Request, zap.http.Method) = undefined;
+var router: zart.Router(void, zap.Request, zap.http.Method, void) = undefined;
 
 fn on_request(r: zap.Request) !void {
     router.resolve(r.methodAsEnum(), r.path.?, r, &.{});
