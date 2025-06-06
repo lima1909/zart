@@ -7,7 +7,9 @@ const Connection = std.net.Server.Connection;
 
 const zart = @import("zart");
 
-pub fn handleConnection(App: type, router: *const zart.Router(App, Request, Method, void), conn: Connection) !void {
+pub const Router = zart.Router(void, std.http.Server.Request, std.http.Method, JsonExtractor);
+
+pub fn handleConnection(router: *const Router, conn: Connection) !void {
     defer conn.stream.close();
 
     var buffer: [4096]u8 = undefined;

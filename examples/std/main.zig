@@ -18,19 +18,16 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const router = try zart.NewRouter(http.Server.Request)
-        .withConfig(.{
-            .Extractor = server.JsonExtractor,
-            .error_handler = server.ErrorHandler,
-        })
-        .init(
+    const router = try server.Router.init(
         allocator,
+        null,
         .{
             Route("/user/:id", .{ .GET, user }),
             Route("/value", .{ get(value), post(value) }),
             Route("/", .{get(staticStr)}),
             Route("/number", .{get(staticNumber)}),
         },
+        .{ .error_handler = server.ErrorHandler },
     );
     defer router.deinit();
 
@@ -44,7 +41,7 @@ pub fn main() !void {
 
     while (true) {
         // handle BLOCKING connection
-        try server.handleConnection(void, &router, try listener.accept());
+        try server.handleConnection(&router, try listener.accept());
     }
 }
 

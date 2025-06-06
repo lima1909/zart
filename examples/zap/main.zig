@@ -30,7 +30,8 @@ pub const ErrorHandler = struct {
     }
 }.handleError;
 
-var router: zart.Router(void, zap.Request, zap.http.Method, void) = undefined;
+const Router = zart.Router(void, zap.Request, zap.http.Method, JsonExtractor);
+var router: Router = undefined;
 
 fn on_request(r: zap.Request) !void {
     router.resolve(r.methodAsEnum(), r.path.?, r, &.{});
@@ -51,18 +52,14 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    router = try zart.NewRouter(zap.Request)
-        .withConfig(.{
-            .Extractor = JsonExtractor,
-            .error_handler = ErrorHandler,
-            .Method = zap.http.Method,
-        })
-        .init(
+    router = try Router.init(
         allocator,
+        null,
         .{
             zart.Route("/", .{ .{ .GET, index }, .{ .POST, index } }),
             zart.Route("/str", .{ .GET, staticStr }),
         },
+        .{ .error_handler = ErrorHandler },
     );
     defer router.deinit();
 

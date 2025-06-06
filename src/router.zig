@@ -1,26 +1,14 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const ResponseWriter = @import("handler.zig").ResponseWriter;
 const kv = @import("kv.zig");
 
 pub fn Config(Request: type) type {
     return struct {
-        const ErrorHandler = *const fn (Request, HttpError) void;
+        const ErrorHandlerFn = *const fn (Request, HttpError) void;
 
-        error_handler: ?ErrorHandler = null,
-
-        ///
-        /// Signature for Extractor:
-        ///   pub fn body(T: type, allocator: std.mem.Allocator, r: Request) !T
-        ///   pub fn response(T: type, allocator: std.mem.Allocator, r: Request, resp: Response(T)) !void
-        Extractor: type = void,
-        ///
-        /// set the Method enum if it is not from the std lib
-        Method: type = std.http.Method,
-        ///
-        /// set the type of the Middleware-Context
-        MiddlewareContext: type = void,
-
+        error_handler: ?ErrorHandlerFn = null,
         parser: kv.parse = kv.matchitParser,
     };
 }
@@ -47,53 +35,13 @@ pub fn Route(path: []const u8, handlers: anytype) struct { path: []const u8, han
     return .{ .path = path, .handles = handlers };
 }
 
-fn Builder(Request: type) type {
-    return struct {
-        const Self = @This();
-        config: Config(Request) = .{},
-
-        pub fn withConfig(_: Self, config: Config(Request)) Self {
-            return .{
-                .config = config,
-            };
-        }
-
-        pub fn init(self: Self, allocator: Allocator, routes: anytype) !Router(
-            void,
-            Request,
-            self.config.Method,
-            self.config.MiddlewareContext,
-        ) {
-            return try Router(
-                void,
-                Request,
-                self.config.Method,
-                self.config.MiddlewareContext,
-            ).init(allocator, null, routes, self.config);
-        }
-
-        pub fn initWithApp(self: Self, allocator: Allocator, app: anytype, routes: anytype) !Router(
-            @TypeOf(app),
-            Request,
-            self.config.Method,
-            self.config.MiddlewareContext,
-        ) {
-            return try Router(
-                @TypeOf(app),
-                Request,
-                self.config.Method,
-                self.config.MiddlewareContext,
-            ).init(allocator, app, routes, self.config);
-        }
-    };
-}
-
-/// A Builder to create an configure a desired Router.
-pub fn NewRouter(Request: type) Builder(Request) {
-    return Builder(Request){};
-}
-
-pub fn Router(App: type, Request: type, Method: type, MiddlewareContext: type) type {
+/// App: global context container
+/// Request: the request: for example std.http.Server.Request
+/// Methods: an enum with supported Methods, like std.http.Method
+/// Extractor:
+///   pub fn body(T: type, allocator: std.mem.Allocator, r: Request) !T
+///   pub fn response(T: type, allocator: std.mem.Allocator, r: Request, resp: Response(T)) !void
+pub fn Router(App: type, Request: type, Method: type, Extractor: type) type {
 
     // default error handler
     const DefaultErrorHandler = struct {
@@ -103,18 +51,13 @@ pub fn Router(App: type, Request: type, Method: type, MiddlewareContext: type) t
     };
 
     return struct {
-        const ResponseWriter = @import("handler.zig").ResponseWriter;
-        const Middleware = @import("middleware.zig").Middleware(MiddlewareContext, Request);
-        const Executor = @import("middleware.zig").Executor(MiddlewareContext, Request);
-
         const Self = @This();
 
         app: ?App,
         trees: Trees(App, Request, Method),
-        error_handler: Config(Request).ErrorHandler,
-        middlewars: []const Middleware = &.{},
+        error_handler: Config(Request).ErrorHandlerFn,
 
-        fn init(allocator: Allocator, app: ?App, routes: anytype, cfg: Config(Request)) !Self {
+        pub fn init(allocator: Allocator, app: ?App, routes: anytype, cfg: Config(Request)) !Self {
             var self = Self{
                 .app = app,
                 .trees = Trees(App, Request, Method){},
@@ -127,7 +70,7 @@ pub fn Router(App: type, Request: type, Method: type, MiddlewareContext: type) t
                         App,
                         Request,
                         r.handles[1],
-                        cfg.Extractor,
+                        Extractor,
                     );
                     try self.trees.write(allocator, r.handles[0], cfg.parser).insert(r.path, handler);
                 } else {
@@ -136,7 +79,7 @@ pub fn Router(App: type, Request: type, Method: type, MiddlewareContext: type) t
                             App,
                             Request,
                             h[1],
-                            cfg.Extractor,
+                            Extractor,
                         );
                         try self.trees.write(allocator, h[0], cfg.parser).insert(r.path, handler);
                     }
@@ -150,10 +93,6 @@ pub fn Router(App: type, Request: type, Method: type, MiddlewareContext: type) t
             self.trees.deinit();
         }
 
-        pub fn withMiddlewares(self: *Self, middlewares: []const Middleware) void {
-            self.middlewars = middlewares;
-        }
-
         pub fn resolve(self: *const Self, method: Method, path: []const u8, req: Request, query: []const kv.KeyValue) void {
             const tree = self.trees.read(method) orelse {
                 return self.error_handler(req, .{ .status = .method_not_allowed, .message = @constCast("405 Method Not Allowed") });
@@ -165,13 +104,6 @@ pub fn Router(App: type, Request: type, Method: type, MiddlewareContext: type) t
                 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
                 var arena = std.heap.ArenaAllocator.init(gpa.allocator());
                 defer arena.deinit();
-
-                const exec = Executor{
-                    .context = {},
-                    .request = &req,
-                    .middlewares = self.middlewars,
-                };
-                _ = exec;
 
                 var w = ResponseWriter{};
                 return handler.handle(arena.allocator(), self.app, req, &w, query, &matched.kvs) catch |err| {
@@ -278,6 +210,11 @@ pub fn trace(func: anytype) Handle(func) {
 }
 
 // ========================== TESTS =============================
+
+fn testRouter(Request: type, routes: anytype, cfg: Config(Request)) !Router(void, Request, std.http.Method, void) {
+    return Router(void, Request, std.http.Method, void).init(std.testing.allocator, null, routes, cfg);
+}
+
 const arg = @import("handler.zig").arg;
 const P = arg.P;
 const Q = arg.Q;
@@ -303,10 +240,14 @@ test "router for handler object" {
         }
     }.user;
 
-    const router = try NewRouter(*i32).init(std.testing.allocator, .{
-        Route("/foo", .{ get(user), post(user) }),
-        .{ .path = "/bar", .handles = .{ .GET, user } },
-    });
+    const router = try testRouter(
+        *i32,
+        .{
+            Route("/foo", .{ get(user), post(user) }),
+            .{ .path = "/bar", .handles = .{ .GET, user } },
+        },
+        .{},
+    );
     defer router.deinit();
 
     var i: i32 = 3;
@@ -329,9 +270,14 @@ test "router for i32" {
         }
     }.addOne;
 
-    const router = try NewRouter(*i32).initWithApp(std.testing.allocator, &app, .{
-        Route("/foo", .{ .HEAD, addOne }),
-    });
+    const router = try Router(*App, *i32, std.http.Method, void).init(
+        std.testing.allocator,
+        &app,
+        .{
+            Route("/foo", .{ .HEAD, addOne }),
+        },
+        .{},
+    );
     defer router.deinit();
 
     var i: i32 = 3;
@@ -356,9 +302,13 @@ test "router std.http.Server.Request" {
         }
     }.user;
 
-    const router = try NewRouter(*HttpRequest).init(std.testing.allocator, .{
-        Route("/user/:id", .{ .PATCH, user }),
-    });
+    const router = try testRouter(
+        *HttpRequest,
+        .{
+            Route("/user/:id", .{ .PATCH, user }),
+        },
+        .{},
+    );
     defer router.deinit();
 
     var req = HttpRequest{
@@ -394,9 +344,13 @@ test "router for struct params" {
         }
     }.addOne;
 
-    const router = try NewRouter(*i32).init(std.testing.allocator, .{
-        Route("/foo/:ok", .{ .DELETE, addOne }),
-    });
+    const router = try testRouter(
+        *i32,
+        .{
+            Route("/foo/:ok", .{ .DELETE, addOne }),
+        },
+        .{},
+    );
     defer router.deinit();
 
     var i: i32 = 3;
@@ -413,9 +367,13 @@ test "router for params" {
         }
     }.addOne;
 
-    const router = try NewRouter(*i32).init(std.testing.allocator, .{
-        Route("/foo/:id", .{post(addOne)}),
-    });
+    const router = try testRouter(
+        *i32,
+        .{
+            Route("/foo/:id", .{post(addOne)}),
+        },
+        .{},
+    );
     defer router.deinit();
 
     var i: i32 = 3;
@@ -430,9 +388,13 @@ test "first Params, than request" {
         }
     }.foo;
 
-    const router = try NewRouter(*i32).init(std.testing.allocator, .{
-        Route("/foo/:id", &.{get(foo)}),
-    });
+    const router = try testRouter(
+        *i32,
+        .{
+            Route("/foo/:id", &.{get(foo)}),
+        },
+        .{},
+    );
     defer router.deinit();
 
     var i: i32 = 3;
@@ -447,9 +409,13 @@ test "with query" {
         }
     }.foo;
 
-    const router = try NewRouter(*i32).init(std.testing.allocator, .{
-        Route("/foo", .{ .GET, foo }),
-    });
+    const router = try testRouter(
+        *i32,
+        .{
+            Route("/foo", .{ .GET, foo }),
+        },
+        .{},
+    );
     defer router.deinit();
 
     var i: i32 = 3;
@@ -465,9 +431,13 @@ test "with Q" {
         }
     }.foo;
 
-    const router = try NewRouter(*i32).init(std.testing.allocator, .{
-        Route("/foo", .{ .GET, foo }),
-    });
+    const router = try testRouter(
+        *i32,
+        .{
+            Route("/foo", .{ .GET, foo }),
+        },
+        .{},
+    );
     defer router.deinit();
 
     var i: i32 = 3;
@@ -477,7 +447,7 @@ test "with Q" {
 
 test "with B" {
     const Id = struct { id: i32 };
-    const extract = struct {
+    const Extractor = struct {
         pub fn body(T: type, _: std.mem.Allocator, _: *i32) !T {
             return B(Id){ .id = 42 };
         }
@@ -488,9 +458,14 @@ test "with B" {
         }
     }.foo;
 
-    const router = try NewRouter(*i32).withConfig(.{ .Extractor = extract }).init(std.testing.allocator, .{
-        Route("/foo", .{ .GET, foo }),
-    });
+    const router = try Router(void, *i32, std.http.Method, Extractor).init(
+        std.testing.allocator,
+        null,
+        .{
+            Route("/foo", .{ .GET, foo }),
+        },
+        .{},
+    );
     defer router.deinit();
 
     var i: i32 = 3;
@@ -499,7 +474,7 @@ test "with B" {
 }
 
 test "with Body" {
-    const extract = struct {
+    const Extractor = struct {
         pub fn body(T: type, allocator: std.mem.Allocator, _: *i32) !T {
             return try std.json.parseFromSliceLeaky(T, allocator, "{\"id\": 42}", .{});
         }
@@ -512,9 +487,14 @@ test "with Body" {
         }
     }.foo;
 
-    const router = try NewRouter(*i32).withConfig(.{ .Extractor = extract }).init(std.testing.allocator, .{
-        Route("/foo", &.{ .GET, foo }),
-    });
+    const router = try Router(void, *i32, std.http.Method, Extractor).init(
+        std.testing.allocator,
+        null,
+        .{
+            Route("/foo", &.{ .GET, foo }),
+        },
+        .{},
+    );
     defer router.deinit();
 
     var i: i32 = 3;
@@ -525,7 +505,7 @@ test "with Body" {
 test "request with two args" {
     const Req = struct { *i32, bool };
 
-    const extract = struct {
+    const Extractor = struct {
         pub fn body(T: type, allocator: std.mem.Allocator, _: Req) !T {
             return try std.json.parseFromSliceLeaky(T, allocator, "{\"id\": 45}", .{});
         }
@@ -541,9 +521,14 @@ test "request with two args" {
         }
     }.foo;
 
-    const router = try NewRouter(Req).withConfig(.{ .Extractor = extract }).init(std.testing.allocator, .{
-        Route("/foo", .{ .GET, foo }),
-    });
+    const router = try Router(void, Req, std.http.Method, Extractor).init(
+        std.testing.allocator,
+        null,
+        .{
+            Route("/foo", .{ .GET, foo }),
+        },
+        .{},
+    );
     defer router.deinit();
 
     var i: i32 = 3;
@@ -560,18 +545,17 @@ test "not found" {
         }
     }.foo;
 
-    const router = try NewRouter(*NotFound)
-        .withConfig(.{
+    const router = try testRouter(
+        *NotFound,
+        .{
+            Route("/foo", .{ .GET, foo }),
+        },
+        .{
             .error_handler = struct {
                 fn handleError(req: *NotFound, err: HttpError) void {
                     req.err = err;
                 }
             }.handleError,
-        })
-        .init(
-        std.testing.allocator,
-        .{
-            Route("/foo", .{ .GET, foo }),
         },
     );
     defer router.deinit();
@@ -601,8 +585,12 @@ test "bad request" {
         }
     }.foo;
 
-    const router = try NewRouter(*BadRequest)
-        .withConfig(.{
+    const router = try testRouter(
+        *BadRequest,
+        .{
+            Route("/foo", .{ .GET, foo }),
+        },
+        .{
             .error_handler = struct {
                 fn handleError(req: *BadRequest, err: HttpError) void {
                     std.testing.expectEqualStrings("400 Bad Request: error.BAD", err.message) catch @panic("test failed");
@@ -610,11 +598,6 @@ test "bad request" {
                     req.was_called = true;
                 }
             }.handleError,
-        })
-        .init(
-        std.testing.allocator,
-        .{
-            Route("/foo", .{ .GET, foo }),
         },
     );
     defer router.deinit();
@@ -633,11 +616,12 @@ test "two routes for one path" {
         }
     }.foo;
 
-    const router = try NewRouter(*i32).init(
-        std.testing.allocator,
+    const router = try testRouter(
+        *i32,
         .{
             Route("/foo", .{ get(foo), post(foo) }),
         },
+        .{},
     );
     defer router.deinit();
 
@@ -648,45 +632,60 @@ test "two routes for one path" {
     try std.testing.expectEqual(5, i);
 }
 
-test "with Middleware" {
-    const foo = struct {
-        fn foo(i: *i32) void {
-            i.* += 1;
-        }
-    }.foo;
-
-    const R = Router(void, *i32, std.http.Method, void);
-    const M = struct {
-        const Self = @This();
-
-        pub fn execute(ptr: *anyopaque, c: *void, r: *const *i32, w: *R.ResponseWriter, exec: *R.Executor) anyerror!void {
-            _ = ptr;
-            _ = c;
-            _ = r;
-            _ = w;
-
-            try exec.next();
-        }
-
-        fn middleware(self: *Self) R.Middleware {
-            return .{
-                .ptr = self,
-                .executeFn = execute,
-            };
-        }
-    };
-
-    var m = M{};
-    var router = try NewRouter(*i32).init(
-        std.testing.allocator,
-        .{
-            Route("/foo", .{get(foo)}),
-        },
-    );
-    router.withMiddlewares(&[_]R.Middleware{m.middleware()});
-    defer router.deinit();
-
-    var i: i32 = 3;
-    router.resolve(.GET, "/foo", &i, &[_]kv.KeyValue{});
-    try std.testing.expectEqual(4, i);
-}
+// test "with Middleware" {
+//     const Iterator = @import("middleware.zig").Iterator;
+//     const Middleware = @import("middleware.zig").Middleware;
+//     const Executor = @import("middleware.zig").Executor;
+//
+//     const foo = struct {
+//         fn foo(i: *i32) void {
+//             i.* += 1;
+//         }
+//     }.foo;
+//
+//     const R = Router(void, *i32, std.http.Method);
+//     const M = struct {
+//         const Self = @This();
+//
+//         pub fn execute(ptr: *anyopaque, _: *void, r: *const *i32, w: *R.ResponseWriter, it: Iterator) anyerror!void {
+//             _ = ptr;
+//
+//             std.debug.print("Middleware: {d}\n", .{r.*.*});
+//             w.status = .bad_request;
+//
+//             try it.next();
+//         }
+//
+//         fn middleware(self: *Self) Middleware(*i32, void) {
+//             return .{
+//                 .ptr = self,
+//                 .executeFn = execute,
+//             };
+//         }
+//     };
+//
+//     var w = R.ResponseWriter{};
+//     var i: i32 = 3;
+//     var m = M{};
+//     var executor = Executor(*i32).new({}){
+//         .request = &&i,
+//         .response = &w,
+//         .middlewares = &.{m.middleware()},
+//     };
+//
+//     var router = try Router(void, *i32, std.http.Method).init(
+//         std.testing.allocator,
+//         null,
+//         .{
+//             Route("/foo", .{get(foo)}),
+//         },
+//         .{
+//             .middlewares = executor.iterator(),
+//         },
+//     );
+//     defer router.deinit();
+//
+//     router.resolve2(.GET, "/foo", &i, &[_]kv.KeyValue{}, executor.iterator());
+//     try std.testing.expectEqual(4, i);
+//     try std.testing.expectEqual(.bad_request, w.status);
+// }

@@ -1,8 +1,7 @@
 pub const router = @import("router.zig");
-pub const Route = router.Route;
-pub const NewRouter = router.NewRouter;
-pub const Router = router.Router;
 pub const HttpError = router.HttpError;
+pub const Router = router.Router;
+pub const Route = router.Route;
 
 pub const handler = @import("handler.zig");
 pub const ResponseWriter = handler.ResponseWriter;
