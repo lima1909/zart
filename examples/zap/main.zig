@@ -47,19 +47,35 @@ fn staticStr(r: zap.Request) !void {
     try r.sendBody("hello world");
 }
 
+// logging middleware with printing the execution duration.
+fn loggingMiddleware(h: zart.Handle) !void {
+    const start = std.time.nanoTimestamp();
+    defer {
+        const duration = std.time.nanoTimestamp() - start;
+        std.log.info("LoggingMiddleware duration: {d}ns", .{duration});
+    }
+
+    // calling the next middleware
+    try h.next();
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
 
     router = try Router.init(
-        allocator,
+        gpa.allocator(),
         null,
         .{
             zart.Route("/", .{ .{ .GET, index }, .{ .POST, index } }),
             zart.Route("/str", .{ .GET, staticStr }),
         },
-        .{ .error_handler = ErrorHandler },
+        .configWithMiddleware(
+            .{ .error_handler = ErrorHandler },
+            .{
+                loggingMiddleware,
+            },
+        ),
     );
     defer router.deinit();
 

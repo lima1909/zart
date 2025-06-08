@@ -1,17 +1,9 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const ResponseWriter = @import("handler.zig").ResponseWriter;
 const kv = @import("kv.zig");
-
-pub fn Config(Request: type) type {
-    return struct {
-        const ErrorHandlerFn = *const fn (Request, HttpError) void;
-
-        error_handler: ?ErrorHandlerFn = null,
-        parser: kv.parse = kv.matchitParser,
-    };
-}
+const handler = @import("handler.zig");
+const ResponseWriter = handler.ResponseWriter;
 
 pub const HttpError = struct {
     status: std.http.Status,
@@ -42,6 +34,7 @@ pub fn Route(path: []const u8, handlers: anytype) struct { path: []const u8, han
 ///   pub fn body(T: type, allocator: std.mem.Allocator, r: Request) !T
 ///   pub fn response(T: type, allocator: std.mem.Allocator, r: Request, resp: Response(T)) !void
 pub fn Router(App: type, Request: type, Method: type, Extractor: type) type {
+    const Middleware = handler.Middleware(App, Request);
 
     // default error handler
     const DefaultErrorHandler = struct {
@@ -51,37 +44,58 @@ pub fn Router(App: type, Request: type, Method: type, Extractor: type) type {
     };
 
     return struct {
+        const Config = struct {
+            const ErrorHandlerFn = *const fn (Request, HttpError) void;
+
+            error_handler: ?ErrorHandlerFn = null,
+            parser: kv.parse = kv.matchitParser,
+            middleware: ?Middleware = null,
+
+            pub fn configWithMiddleware(cfg: Config, funcs: anytype) Config {
+                var c = cfg;
+                c.middleware = comptime handler.middlewareFromFns(App, Request, Extractor, funcs);
+                return c;
+            }
+        };
+
         const Self = @This();
 
         app: ?App,
         trees: Trees(App, Request, Method),
-        error_handler: Config(Request).ErrorHandlerFn,
+        middleware: ?Middleware = null,
+        error_handler: Config.ErrorHandlerFn,
+        // thread_safe_allocator: Allocator,
 
-        pub fn init(allocator: Allocator, app: ?App, routes: anytype, cfg: Config(Request)) !Self {
+        pub fn init(allocator: Allocator, app: ?App, routes: anytype, cfg: Config) !Self {
             var self = Self{
                 .app = app,
                 .trees = Trees(App, Request, Method){},
                 .error_handler = cfg.error_handler orelse DefaultErrorHandler.handleError,
+                .middleware = cfg.middleware,
+                // .thread_safe_allocator = cfg.thread_safe_allocator orelse blk: {
+                //     var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
+                //     break :blk gpa.allocator();
+                // },
             };
 
             inline for (routes) |r| {
                 if (@typeInfo(@TypeOf(r.handles[0])) == .enum_literal) {
-                    const handler = @import("handler.zig").handlerFromFn(
+                    const hdler = handler.handlerFromFn(
                         App,
                         Request,
-                        r.handles[1],
                         Extractor,
+                        r.handles[1],
                     );
-                    try self.trees.write(allocator, r.handles[0], cfg.parser).insert(r.path, handler);
+                    try self.trees.write(allocator, r.handles[0], cfg.parser).insert(r.path, hdler);
                 } else {
                     inline for (r.handles) |h| {
-                        const handler = @import("handler.zig").handlerFromFn(
+                        const hdler = handler.handlerFromFn(
                             App,
                             Request,
-                            h[1],
                             Extractor,
+                            h[1],
                         );
-                        try self.trees.write(allocator, h[0], cfg.parser).insert(r.path, handler);
+                        try self.trees.write(allocator, h[0], cfg.parser).insert(r.path, hdler);
                     }
                 }
             }
@@ -94,19 +108,50 @@ pub fn Router(App: type, Request: type, Method: type, Extractor: type) type {
         }
 
         pub fn resolve(self: *const Self, method: Method, path: []const u8, req: Request, query: []const kv.KeyValue) void {
+            var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
+            var arena = std.heap.ArenaAllocator.init(gpa.allocator());
+            defer arena.deinit();
+            const alloc = arena.allocator();
+
+            // TODO: run the middleware always or only if a matched value exist?
+            if (self.middleware) |mw| {
+                var err: ?HttpError = null;
+                const hdler = blk: {
+                    if (self.trees.read(method)) |tree| {
+                        const matched = tree.resolve(path);
+                        if (matched.value) |h| {
+                            break :blk h;
+                        } else {
+                            err = .{ .status = .not_found, .message = @constCast("404 Not Found") };
+                            break :blk null;
+                        }
+                    } else {
+                        err = .{ .status = .method_not_allowed, .message = @constCast("405 Method Not Allowed") };
+                        break :blk null;
+                    }
+                };
+
+                var w = ResponseWriter{};
+                _ = handler.Executor(App, Request).initAndStart(alloc, mw, self.app, req, &w, query, &.{}, hdler) catch |e| {
+                    var buffer: [50]u8 = undefined;
+                    self.error_handler(req, HttpError.withStringMessage(&buffer, .internal_server_error, "Internal Server Error", e));
+                    return;
+                };
+
+                // handle the error, if exist, after executing the middleware
+                if (err != null) {
+                    self.error_handler(req, err.?);
+                }
+                return;
+            }
+
             const tree = self.trees.read(method) orelse {
                 return self.error_handler(req, .{ .status = .method_not_allowed, .message = @constCast("405 Method Not Allowed") });
             };
-
             const matched = tree.resolve(path);
-            if (matched.value) |handler| {
-                // TODO: can I do it better?
-                var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-                var arena = std.heap.ArenaAllocator.init(gpa.allocator());
-                defer arena.deinit();
-
+            if (matched.value) |hdler| {
                 var w = ResponseWriter{};
-                return handler.handle(arena.allocator(), self.app, req, &w, query, &matched.kvs) catch |err| {
+                return hdler.handle(alloc, self.app, req, &w, query, &matched.kvs, handler.noHandle()) catch |err| {
                     var buffer: [50]u8 = undefined;
                     self.error_handler(req, HttpError.withStringMessage(&buffer, .bad_request, "Bad Request", err));
                 };
@@ -210,9 +255,12 @@ pub fn trace(func: anytype) Handle(func) {
 }
 
 // ========================== TESTS =============================
+fn TRouter(Request: type) type {
+    return Router(void, Request, std.http.Method, void);
+}
 
-fn testRouter(Request: type, routes: anytype, cfg: Config(Request)) !Router(void, Request, std.http.Method, void) {
-    return Router(void, Request, std.http.Method, void).init(std.testing.allocator, null, routes, cfg);
+fn testRouter(Request: type, routes: anytype, cfg: TRouter(Request).Config) !TRouter(Request) {
+    return TRouter(Request).init(std.testing.allocator, null, routes, cfg);
 }
 
 const arg = @import("handler.zig").arg;
@@ -536,41 +584,50 @@ test "request with two args" {
     try std.testing.expectEqual(48, i);
 }
 
-test "not found" {
-    const NotFound = struct { err: ?HttpError = null };
+test "not_found" {
+    const NotFoundRequest = struct { err: ?HttpError = null, req: i32 = 0 };
 
-    const foo = struct {
-        fn foo() void {
-            return;
+    const def = struct {
+        fn foo() void {}
+        fn middleware(r: *NotFoundRequest) void {
+            r.req += 1;
         }
-    }.foo;
+    };
 
     const router = try testRouter(
-        *NotFound,
+        *NotFoundRequest,
         .{
-            Route("/foo", .{ .GET, foo }),
+            Route("/foo", .{ .GET, def.foo }),
         },
-        .{
-            .error_handler = struct {
-                fn handleError(req: *NotFound, err: HttpError) void {
-                    req.err = err;
-                }
-            }.handleError,
-        },
+        .configWithMiddleware(
+            .{
+                .error_handler = struct {
+                    fn handleError(req: *NotFoundRequest, err: HttpError) void {
+                        req.err = err;
+                    }
+                }.handleError,
+            },
+            .{
+                def.middleware,
+            },
+        ),
     );
     defer router.deinit();
 
-    var notFound = NotFound{};
-    router.resolve(.GET, "/not_found", &notFound, &[_]kv.KeyValue{});
+    var notFoundReq = NotFoundRequest{};
+    router.resolve(.GET, "/not_found", &notFoundReq, &[_]kv.KeyValue{});
 
-    try std.testing.expectEqual(.not_found, notFound.err.?.status);
-    try std.testing.expectEqualStrings("404 Not Found", notFound.err.?.message);
+    try std.testing.expectEqual(.not_found, notFoundReq.err.?.status);
+    try std.testing.expectEqualStrings("404 Not Found", notFoundReq.err.?.message);
+    try std.testing.expectEqual(1, notFoundReq.req);
 
-    // for POST is no tree
-    router.resolve(.POST, "/not_found", &notFound, &[_]kv.KeyValue{});
+    // for POST has no tree
+    router.resolve(.POST, "/foo", &notFoundReq, &[_]kv.KeyValue{});
 
-    try std.testing.expectEqual(.method_not_allowed, notFound.err.?.status);
-    try std.testing.expectEqualStrings("405 Method Not Allowed", notFound.err.?.message);
+    try std.testing.expectEqual(.method_not_allowed, notFoundReq.err.?.status);
+    try std.testing.expectEqualStrings("405 Method Not Allowed", notFoundReq.err.?.message);
+
+    try std.testing.expectEqual(2, notFoundReq.req);
 }
 
 test "bad request" {
@@ -632,60 +689,44 @@ test "two routes for one path" {
     try std.testing.expectEqual(5, i);
 }
 
-// test "with Middleware" {
-//     const Iterator = @import("middleware.zig").Iterator;
-//     const Middleware = @import("middleware.zig").Middleware;
-//     const Executor = @import("middleware.zig").Executor;
-//
-//     const foo = struct {
-//         fn foo(i: *i32) void {
-//             i.* += 1;
-//         }
-//     }.foo;
-//
-//     const R = Router(void, *i32, std.http.Method);
-//     const M = struct {
-//         const Self = @This();
-//
-//         pub fn execute(ptr: *anyopaque, _: *void, r: *const *i32, w: *R.ResponseWriter, it: Iterator) anyerror!void {
-//             _ = ptr;
-//
-//             std.debug.print("Middleware: {d}\n", .{r.*.*});
-//             w.status = .bad_request;
-//
-//             try it.next();
-//         }
-//
-//         fn middleware(self: *Self) Middleware(*i32, void) {
-//             return .{
-//                 .ptr = self,
-//                 .executeFn = execute,
-//             };
-//         }
-//     };
-//
-//     var w = R.ResponseWriter{};
-//     var i: i32 = 3;
-//     var m = M{};
-//     var executor = Executor(*i32).new({}){
-//         .request = &&i,
-//         .response = &w,
-//         .middlewares = &.{m.middleware()},
-//     };
-//
-//     var router = try Router(void, *i32, std.http.Method).init(
-//         std.testing.allocator,
-//         null,
-//         .{
-//             Route("/foo", .{get(foo)}),
-//         },
-//         .{
-//             .middlewares = executor.iterator(),
-//         },
-//     );
-//     defer router.deinit();
-//
-//     router.resolve2(.GET, "/foo", &i, &[_]kv.KeyValue{}, executor.iterator());
-//     try std.testing.expectEqual(4, i);
-//     try std.testing.expectEqual(.bad_request, w.status);
-// }
+test "Xwith Middleware" {
+    const fns = struct {
+        fn foo(i: *i32) void {
+            i.* += 8;
+        }
+
+        fn middleware1(i: *i32, h: handler.Handle) void {
+            i.* += 1;
+            h.next() catch {};
+            // 3 (init) + 1 (m1) + 2 (m2) + 8 (foo)
+            std.testing.expectEqual(14, i.*) catch |err| {
+                std.debug.print("error in middleware test: {any}\n", .{err});
+            };
+            i.* += 4;
+        }
+        fn middleware2(i: *i32, h: handler.Handle) void {
+            i.* += 2;
+            h.next() catch {};
+        }
+    };
+
+    var router = try testRouter(
+        *i32,
+        .{
+            Route("/foo", .{ .GET, fns.foo }),
+        },
+        .configWithMiddleware(
+            .{},
+            .{
+                fns.middleware1,
+                fns.middleware2,
+            },
+        ),
+    );
+    defer router.deinit();
+
+    var i: i32 = 3;
+    router.resolve(.GET, "/foo", &i, &[_]kv.KeyValue{});
+
+    try std.testing.expectEqual(18, i);
+}

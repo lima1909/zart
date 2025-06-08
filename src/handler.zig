@@ -18,14 +18,24 @@ pub fn Handler(App: type, Request: type) type {
             w: *ResponseWriter,
             query: []const KeyValue,
             params: []const KeyValue,
+            h: Handle,
         ) anyerror!void,
     };
 }
 
 /// Factory to create a Handler for a given function.
-pub fn handlerFromFn(App: type, Request: type, func: anytype, Extractor: type) Handler(App, Request) {
+pub fn handlerFromFn(App: type, Request: type, Extractor: type, func: anytype) Handler(App, Request) {
     const h = struct {
-        fn handle(allocator: Allocator, app: ?App, req: Request, w: *ResponseWriter, query: []const KeyValue, params: []const KeyValue) !void {
+        fn handle(
+            allocator: Allocator,
+            app: ?App,
+            req: Request,
+            w: *ResponseWriter,
+            query: []const KeyValue,
+            params: []const KeyValue,
+            h: Handle,
+        ) !void {
+
             // the switch doesn't work, if App and Request have the same type!
             const NoApp = struct {};
             const AppType: type = if (App == void and Request == void) NoApp else App;
@@ -44,6 +54,7 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, Extractor: type) H
                         AppType => if (app) |a| a else return error.NoAppDefined,
                         Request => req,
                         *ResponseWriter => w,
+                        Handle => h,
                         Params => Params{ .kvs = params },
                         Query => Query{ .kvs = query },
                         Body => try Extractor.body(std.json.Value, allocator, req),
@@ -87,7 +98,135 @@ pub fn handlerFromFn(App: type, Request: type, func: anytype, Extractor: type) H
     return Handler(App, Request){ .handle = h.handle };
 }
 
-// The response writer to set the Status or change the Headers.
+/// Handle is an Iterator over all Middleware Handler-Functions.
+pub const Handle = struct {
+    ptr: *anyopaque,
+    nextFn: *const fn (ptr: *anyopaque) anyerror!void,
+
+    pub fn next(self: Handle) !void {
+        return self.nextFn(self.ptr);
+    }
+};
+
+/// NoHandle implement the Handle interface, but do nothing.
+pub fn noHandle() Handle {
+    const NoHandle = struct {
+        pub fn next(_: *anyopaque) !void {}
+    };
+
+    var h = NoHandle{};
+    return .{
+        .ptr = &h,
+        .nextFn = NoHandle.next,
+    };
+}
+
+/// Executor execute all Handlers saved in the Middleware and after that, the Route-Hanlder will be execute.
+pub fn Executor(App: type, Request: type) type {
+    return struct {
+        const Self = @This();
+
+        index: usize,
+        middleware: Middleware(App, Request),
+        handler: ?Handler(App, Request) = null,
+
+        // all parameter for calling the Middleware-Handler
+        // and the Handler for the route, if it exist
+        alloc: Allocator = undefined,
+        app: ?App = null,
+        req: Request = undefined,
+        w: *ResponseWriter = undefined,
+        query: []const KeyValue = undefined,
+        params: []const KeyValue = undefined,
+
+        /// start: execute the first Handler
+        /// The next Handler is executing by calling next()
+        pub fn initAndStart(
+            alloc: Allocator,
+            middleware: Middleware(App, Request),
+            app: ?App,
+            req: Request,
+            w: *ResponseWriter,
+            query: []const KeyValue,
+            params: []const KeyValue,
+            handler: ?Handler(App, Request),
+        ) !Self {
+            var self = Self{
+                .index = 0,
+                .middleware = middleware,
+                .alloc = alloc,
+                .app = app,
+                .req = req,
+                .w = w,
+                .query = query,
+                .params = params,
+                .handler = handler,
+            };
+
+            try next(&self);
+            return self;
+        }
+
+        pub fn next(ptr: *anyopaque) !void {
+            var self: *Self = @ptrCast(@alignCast(ptr));
+
+            if (self.middleware.next(self.index)) |h| {
+                self.index += 1;
+                return h.handle(self.alloc, self.app, self.req, self.w, self.query, self.params, self.handle());
+            }
+
+            // all Middleware-Handlers are called
+            else if (self.index == self.middleware.len) {
+                self.index += 1;
+                // if and Handler from the route is defined, than call this Handler
+                if (self.handler) |h| {
+                    return h.handle(self.alloc, self.app, self.req, self.w, self.query, self.params, self.handle());
+                }
+            }
+        }
+
+        pub fn handle(self: *Self) Handle {
+            return .{
+                .ptr = self,
+                .nextFn = next,
+            };
+        }
+    };
+}
+
+// Iterator over handlers
+pub fn Middleware(App: type, Request: type) type {
+    return struct {
+        len: usize = 0,
+        next: *const fn (usize) ?Handler(App, Request),
+    };
+}
+
+/// Factory to create a Middleware from a given list of Handler-Functions: funcs.
+pub inline fn middlewareFromFns(App: type, Request: type, Extractor: type, funcs: anytype) Middleware(App, Request) {
+    comptime var handlers: [funcs.len]Handler(App, Request) = undefined;
+
+    for (funcs, 0..) |f, i| {
+        handlers[i] = handlerFromFn(App, Request, Extractor, f);
+    }
+
+    const hanlde = struct {
+        fn next(index: usize) ?Handler(App, Request) {
+            if (index >= handlers.len) {
+                return null;
+            }
+
+            return handlers[index];
+        }
+    };
+
+    return .{
+        .len = handlers.len,
+        .next = hanlde.next,
+    };
+}
+
+/// The response writer to set the Status or change the Headers.
 pub const ResponseWriter = struct {
     status: std.http.Status = .ok,
     header: []const KeyValue = &.{},
@@ -260,26 +399,26 @@ test "handler with no args and void return" {
     const h = handlerFromFn(
         void,
         void,
+        void,
         struct {
             fn foo() void {}
         }.foo,
-        void,
     );
 
-    _ = try h.handle(std.testing.allocator, null, undefined, undefined, &[_]KeyValue{}, &[_]KeyValue{});
+    _ = try h.handle(std.testing.allocator, null, undefined, undefined, &[_]KeyValue{}, &[_]KeyValue{}, undefined);
 }
 
 test "handler with no args and error_union with void return" {
     const h = handlerFromFn(
         void,
         void,
+        void,
         struct {
             fn foo() !void {}
         }.foo,
-        void,
     );
 
-    _ = try h.handle(std.testing.allocator, null, undefined, undefined, &[_]KeyValue{}, &[_]KeyValue{});
+    _ = try h.handle(std.testing.allocator, null, undefined, undefined, &[_]KeyValue{}, &[_]KeyValue{}, undefined);
 }
 
 test "handler response with body" {
@@ -288,11 +427,6 @@ test "handler response with body" {
     const h = handlerFromFn(
         void,
         void,
-        struct {
-            fn getUser() User {
-                return .{ .id = 42, .name = "its me" };
-            }
-        }.getUser,
         struct {
             fn response(T: type, allocator: Allocator, _: void, w: *ResponseWriter, resp: T) !void {
                 const s = try std.json.stringifyAlloc(allocator, resp, .{});
@@ -304,10 +438,15 @@ test "handler response with body" {
                 try std.testing.expectEqual(.ok, w.status);
             }
         },
+        struct {
+            fn getUser() User {
+                return .{ .id = 42, .name = "its me" };
+            }
+        }.getUser,
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{});
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{}, undefined);
 }
 
 test "handle static string" {
@@ -315,20 +454,20 @@ test "handle static string" {
         void,
         void,
         struct {
-            fn string() []const u8 {
-                return "its me";
-            }
-        }.string,
-        struct {
             fn response(T: type, _: Allocator, _: void, w: *ResponseWriter, resp: T) !void {
                 try std.testing.expectEqualStrings("its me", resp);
                 try std.testing.expectEqual(.ok, w.status);
             }
         },
+        struct {
+            fn string() []const u8 {
+                return "its me";
+            }
+        }.string,
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{});
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{}, undefined);
 }
 
 test "handle error!static string" {
@@ -336,32 +475,26 @@ test "handle error!static string" {
         void,
         void,
         struct {
-            fn string() ![]const u8 {
-                return "with error";
-            }
-        }.string,
-        struct {
             fn response(T: type, _: Allocator, _: void, w: *ResponseWriter, resp: T) !void {
                 try std.testing.expectEqualStrings("with error", resp);
                 try std.testing.expectEqual(.ok, w.status);
             }
         },
+        struct {
+            fn string() ![]const u8 {
+                return "with error";
+            }
+        }.string,
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{});
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{}, undefined);
 }
 
 test "handle string with allocator" {
     const h = handlerFromFn(
         void,
         void,
-        struct {
-            fn string(alloc: Allocator, params: arg.Params) ![]const u8 {
-                const name: ?[]const u8 = try params.valueAs([]const u8, "name");
-                return std.fmt.allocPrint(alloc, "<html>Hello {s}</html>", .{name.?});
-            }
-        }.string,
         struct {
             fn response(T: type, alloc: Allocator, _: void, w: *ResponseWriter, resp: T) !void {
                 defer alloc.free(resp);
@@ -370,10 +503,16 @@ test "handle string with allocator" {
                 try std.testing.expectEqual(.ok, w.status);
             }
         },
+        struct {
+            fn string(alloc: Allocator, params: arg.Params) ![]const u8 {
+                const name: ?[]const u8 = try params.valueAs([]const u8, "name");
+                return std.fmt.allocPrint(alloc, "<html>Hello {s}</html>", .{name.?});
+            }
+        }.string,
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{.{ .key = "name", .value = "me" }});
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{.{ .key = "name", .value = "me" }}, undefined);
 }
 test "handler with Response" {
     const User = struct { id: i32, name: []const u8 };
@@ -382,12 +521,6 @@ test "handler with Response" {
         void,
         void,
         struct {
-            fn createUser(w: *ResponseWriter) User {
-                w.status = .created;
-                return .{ .id = 42, .name = "its me" };
-            }
-        }.createUser,
-        struct {
             fn response(T: type, _: Allocator, _: void, w: *ResponseWriter, resp: T) !void {
                 const u: User = resp;
                 try std.testing.expectEqual(42, u.id);
@@ -395,10 +528,16 @@ test "handler with Response" {
                 try std.testing.expectEqual(.created, w.status);
             }
         },
+        struct {
+            fn createUser(w: *ResponseWriter) User {
+                w.status = .created;
+                return .{ .id = 42, .name = "its me" };
+            }
+        }.createUser,
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{});
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{}, undefined);
 }
 
 test "handler with error!Response" {
@@ -408,12 +547,6 @@ test "handler with error!Response" {
         void,
         void,
         struct {
-            fn createUserWithError(w: *ResponseWriter) !User {
-                w.status = .created;
-                return .{ .id = 45, .name = "other" };
-            }
-        }.createUserWithError,
-        struct {
             fn response(T: type, _: Allocator, _: void, w: *ResponseWriter, resp: T) !void {
                 const u: User = resp;
                 try std.testing.expectEqual(45, u.id);
@@ -421,10 +554,16 @@ test "handler with error!Response" {
                 try std.testing.expectEqual(.created, w.status);
             }
         },
+        struct {
+            fn createUserWithError(w: *ResponseWriter) !User {
+                w.status = .created;
+                return .{ .id = 45, .name = "other" };
+            }
+        }.createUserWithError,
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{});
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{}, undefined);
 }
 
 test "handler with error!Response with List" {
@@ -433,16 +572,6 @@ test "handler with error!Response with List" {
     const h = handlerFromFn(
         void,
         void,
-        struct {
-            fn createUserWithError(alloc: Allocator, w: *ResponseWriter) !std.ArrayList(User) {
-                var user_list = std.ArrayList(User).init(alloc);
-                try user_list.append(.{ .id = 1, .name = "One" });
-                try user_list.append(.{ .id = 2, .name = "Two" });
-
-                w.status = .created;
-                return user_list;
-            }
-        }.createUserWithError,
         struct {
             fn response(T: type, _: Allocator, _: void, w: *ResponseWriter, resp: T) !void {
                 const ul: std.ArrayList(User) = resp;
@@ -454,10 +583,20 @@ test "handler with error!Response with List" {
                 try std.testing.expectEqual(.created, w.status);
             }
         },
+        struct {
+            fn createUserWithError(alloc: Allocator, w: *ResponseWriter) !std.ArrayList(User) {
+                var user_list = std.ArrayList(User).init(alloc);
+                try user_list.append(.{ .id = 1, .name = "One" });
+                try user_list.append(.{ .id = 2, .name = "Two" });
+
+                w.status = .created;
+                return user_list;
+            }
+        }.createUserWithError,
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{});
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{}, undefined);
     try std.testing.expectEqual(.created, rw.status);
 }
 
@@ -466,19 +605,147 @@ test "handler with setting the http-state" {
         void,
         void,
         struct {
+            fn response(T: type, _: Allocator, _: void, w: *ResponseWriter, _: T) !void {
+                try std.testing.expectEqual(.created, w.status);
+            }
+        },
+        struct {
             fn createUser(w: *ResponseWriter) void {
                 w.status = .created;
                 return;
             }
         }.createUser,
-        struct {
-            fn response(T: type, _: Allocator, _: void, w: *ResponseWriter, _: T) !void {
-                try std.testing.expectEqual(.created, w.status);
-            }
-        },
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{});
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{}, undefined);
     try std.testing.expectEqual(.created, rw.status);
+}
+
+test "middleware handlers" {
+    const middleware = struct {
+        fn hanlder1(r: *i32) void {
+            r.* += 1;
+        }
+        fn hanlder2(r: *i32) void {
+            r.* += 2;
+        }
+        fn hanlder4(r: *i32) void {
+            r.* += 4;
+        }
+    };
+
+    const mw = comptime middlewareFromFns(
+        void,
+        *i32,
+        void,
+        .{
+            middleware.hanlder1,
+            middleware.hanlder2,
+            middleware.hanlder4,
+        },
+    );
+
+    var w = ResponseWriter{};
+    var req: i32 = 0;
+
+    const E = Executor(void, *i32);
+    var exec = try E.initAndStart(std.testing.allocator, mw, null, &req, &w, undefined, undefined, null);
+
+    try std.testing.expectEqual(1, req);
+
+    try E.next(&exec);
+    try std.testing.expectEqual(3, req);
+    try E.next(&exec);
+    try std.testing.expectEqual(7, req);
+
+    // no more middleware exist
+    try E.next(&exec);
+    try std.testing.expectEqual(7, req);
+}
+
+test "middleware handlers with cancel" {
+    const middleware = struct {
+        fn hanlder1(r: *i32) void {
+            r.* += 1;
+        }
+        fn hanlder2(r: *i32) void {
+            r.* += 2;
+        }
+        fn hanlder4() !void {
+            // throw an error, no next Handler is executing
+            return error.MiddlewareError;
+        }
+    };
+
+    const mw = comptime middlewareFromFns(
+        void,
+        *i32,
+        void,
+        .{
+            middleware.hanlder1,
+            middleware.hanlder2,
+            middleware.hanlder4,
+        },
+    );
+
+    var req: i32 = 0;
+    var w = ResponseWriter{};
+
+    const E = Executor(void, *i32);
+    var exec = try E.initAndStart(std.testing.allocator, mw, null, &req, &w, undefined, undefined, null);
+    try std.testing.expectEqual(1, req);
+
+    try E.next(&exec);
+    try std.testing.expectEqual(3, req);
+
+    E.next(&exec) catch |err| {
+        try std.testing.expectEqual(error.MiddlewareError, err);
+    };
+}
+
+test "middleware handlers with route Handler" {
+    const def = struct {
+        fn middleware(r: *i32) void {
+            r.* += 1;
+        }
+        fn handler(r: *i32) void {
+            r.* += 2;
+        }
+    };
+
+    const mw = comptime middlewareFromFns(
+        void,
+        *i32,
+        void,
+        .{
+            def.middleware,
+        },
+    );
+
+    var w = ResponseWriter{};
+    var req: i32 = 0;
+
+    const E = Executor(void, *i32);
+    var exec = try E.initAndStart(
+        std.testing.allocator,
+        mw,
+        null,
+        &req,
+        &w,
+        undefined,
+        undefined,
+        handlerFromFn(void, *i32, void, def.handler),
+    );
+
+    // calling the middleware
+    try std.testing.expectEqual(1, req);
+
+    // calling the handler
+    try E.next(&exec);
+    try std.testing.expectEqual(3, req);
+
+    // no more middleware exist
+    try E.next(&exec);
+    try std.testing.expectEqual(3, req);
 }

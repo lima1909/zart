@@ -27,7 +27,12 @@ pub fn main() !void {
             Route("/", .{get(staticStr)}),
             Route("/number", .{get(staticNumber)}),
         },
-        .{ .error_handler = server.ErrorHandler },
+        .configWithMiddleware(
+            .{ .error_handler = server.ErrorHandler },
+            .{
+                loggingMiddleware,
+            },
+        ),
     );
     defer router.deinit();
 
@@ -86,4 +91,16 @@ fn staticStr() []const u8 {
 //
 fn staticNumber() i32 {
     return 42;
+}
+
+// logging middleware with printing the execution duration.
+fn loggingMiddleware(h: zart.Handle) !void {
+    const start = std.time.nanoTimestamp();
+    defer {
+        const duration = std.time.nanoTimestamp() - start;
+        std.log.info("LoggingMiddleware duration: {d}ns", .{duration});
+    }
+
+    // calling the next middleware
+    try h.next();
 }

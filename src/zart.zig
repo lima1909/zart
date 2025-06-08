@@ -5,13 +5,14 @@ pub const Route = router.Route;
 
 pub const handler = @import("handler.zig");
 pub const ResponseWriter = handler.ResponseWriter;
+pub const Handle = handler.Handle;
+pub const Middleware = handler.Middleware;
 
 pub const KeyValue = @import("kv.zig").KeyValue;
 
 test {
     _ = @import("./handler.zig");
     _ = @import("./kv.zig");
-    _ = @import("./middleware.zig");
     _ = @import("./node.zig");
     _ = @import("./router.zig");
     _ = @import("./tree.zig");
