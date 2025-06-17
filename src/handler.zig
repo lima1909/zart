@@ -12,7 +12,7 @@ const Body = arg.Body;
 pub fn Handler(App: type, Request: type) type {
     return struct {
         handle: *const fn (
-            allocator: Allocator,
+            alloc: Allocator,
             app: ?App,
             req: Request,
             w: *ResponseWriter,
@@ -27,7 +27,7 @@ pub fn Handler(App: type, Request: type) type {
 pub fn handlerFromFn(App: type, Request: type, Extractor: type, func: anytype) Handler(App, Request) {
     const h = struct {
         fn handle(
-            allocator: Allocator,
+            alloc: Allocator,
             app: ?App,
             req: Request,
             w: *ResponseWriter,
@@ -50,20 +50,20 @@ pub fn handlerFromFn(App: type, Request: type, Extractor: type, func: anytype) H
             inline for (info.@"fn".params, 0..) |p, i| {
                 if (p.type) |ty| {
                     args[i] = switch (ty) {
-                        Allocator => allocator,
+                        Allocator => alloc,
                         AppType => if (app) |a| a else return error.NoAppDefined,
                         Request => req,
                         *ResponseWriter => w,
                         Handle => h,
                         Params => Params{ .kvs = params },
                         Query => Query{ .kvs = query },
-                        Body => try Extractor.body(std.json.Value, allocator, req),
+                        Body => try Extractor.body(std.json.Value, alloc, req),
                         else => if (@typeInfo(ty) == .@"struct")
                             if (@hasField(ty, TagFieldName))
                                 switch (@FieldType(ty, TagFieldName)) {
                                     ParamTag => try (Params{ .kvs = params }).into(ty),
                                     QueryTag => try (Query{ .kvs = query }).into(ty),
-                                    BodyTag => try Extractor.body(ty, allocator, req),
+                                    BodyTag => try Extractor.body(ty, alloc, req),
                                     else => unreachable,
                                 }
                             else
@@ -90,7 +90,7 @@ pub fn handlerFromFn(App: type, Request: type, Extractor: type, func: anytype) H
                 // error_union can't be nested, so we can return here
                 // do nothing
                 .void, .noreturn, .error_union => return,
-                else => try Extractor.response(rty, allocator, req, w, result),
+                else => try Extractor.response(rty, alloc, req, w, result),
             }
         }
     };
@@ -110,14 +110,11 @@ pub const Handle = struct {
 
 /// NoHandle implement the Handle interface, but do nothing.
 pub fn noHandle() Handle {
-    const NoHandle = struct {
-        pub fn next(_: *anyopaque) !void {}
-    };
-
-    var h = NoHandle{};
     return .{
-        .ptr = &h,
-        .nextFn = NoHandle.next,
+        .ptr = undefined, // we never use this pointer
+        .nextFn = struct {
+            pub fn next(_: *anyopaque) !void {}
+        }.next,
     };
 }
 

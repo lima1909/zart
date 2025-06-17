@@ -6,10 +6,12 @@ const zap = @import("zap");
 const zart = @import("zart");
 const KeyValue = zart.KeyValue;
 
+const share = @import("zart_share");
+
 pub const JsonExtractor = struct {
     // create parameter objects
     pub fn body(T: type, allocator: std.mem.Allocator, r: zap.Request) !T {
-        return try std.json.parseFromSliceLeaky(T, allocator, r.body, .{});
+        return try std.json.parseFromSliceLeaky(T, allocator, r.body.?, .{});
     }
 
     // create response strings
@@ -34,29 +36,13 @@ const Router = zart.Router(void, zap.Request, zap.http.Method, JsonExtractor);
 var router: Router = undefined;
 
 fn on_request(r: zap.Request) !void {
+    // TODO: get query: r.query and put to the resolve function
     router.resolve(r.methodAsEnum(), r.path.?, r, &.{});
-}
-
-// a simple handler which return a static string
-fn index() []const u8 {
-    return "index";
 }
 
 // a second handler which return a static string
 fn staticStr(r: zap.Request) !void {
     try r.sendBody("hello world");
-}
-
-// logging middleware with printing the execution duration.
-fn loggingMiddleware(h: zart.Handle) !void {
-    const start = std.time.nanoTimestamp();
-    defer {
-        const duration = std.time.nanoTimestamp() - start;
-        std.log.info("LoggingMiddleware duration: {d}ns", .{duration});
-    }
-
-    // calling the next middleware
-    try h.next();
 }
 
 pub fn main() !void {
@@ -67,13 +53,18 @@ pub fn main() !void {
         gpa.allocator(),
         null,
         .{
-            zart.Route("/", .{ .{ .GET, index }, .{ .POST, index } }),
+            zart.Route("/", .{ .{ .GET, share.index }, .{ .POST, share.index } }),
             zart.Route("/str", .{ .GET, staticStr }),
+            zart.Route("/echo", .{ .GET, share.echoUser }),
+            zart.Route("/params/:id", .{ .GET, share.params }),
+            zart.Route("/query", .{ .GET, share.query }), // TODO: query not work in the moment
         },
         .configWithMiddleware(
-            .{ .error_handler = ErrorHandler },
             .{
-                loggingMiddleware,
+                .error_handler = ErrorHandler,
+            },
+            .{
+                share.printDurationMiddleware,
             },
         ),
     );
@@ -81,12 +72,12 @@ pub fn main() !void {
 
     var listener = zap.HttpListener.init(.{
         .on_request = on_request,
-        .port = 3000,
+        .port = 8080,
         .log = false,
         .max_clients = 100,
     });
     try listener.listen();
-    std.debug.print("Listening on 127.0.0.1:3000\n", .{});
+    std.debug.print("Listening on 127.0.0.1:8080\n", .{});
 
     zap.start(.{ .threads = 4, .workers = 4 });
 }

@@ -26,6 +26,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const zart_share = b.createModule(.{
+        .root_source_file = b.path("examples/share.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    zart_share.addImport("zart", zart);
+
     const Dependency = struct {
         name: []const u8,
         dep: *std.Build.Dependency,
@@ -66,6 +73,9 @@ pub fn build(b: *std.Build) void {
         if (ex.dep) |d| {
             example.root_module.addImport(d.name, d.dep.module(d.name));
         }
+
+        // add shared handler and middleware
+        example.root_module.addImport("zart_share", zart_share);
 
         // create an executable
         b.installArtifact(example);
