@@ -116,10 +116,12 @@ pub fn Router(App: type, Request: type, Method: type, Extractor: type) type {
             // TODO: run the middleware always or only if a matched value exist?
             if (self.middleware) |mw| {
                 var err: ?HttpError = null;
+                var params: ?[3]kv.KeyValue = null;
                 const hdler = blk: {
                     if (self.trees.read(method)) |tree| {
                         const matched = tree.resolve(path);
                         if (matched.value) |h| {
+                            params = matched.kvs;
                             break :blk h;
                         } else {
                             err = .{ .status = .not_found, .message = @constCast("404 Not Found") };
@@ -132,7 +134,8 @@ pub fn Router(App: type, Request: type, Method: type, Extractor: type) type {
                 };
 
                 var w = ResponseWriter{};
-                _ = handler.Executor(App, Request).initAndStart(alloc, mw, self.app, req, &w, query, &.{}, hdler) catch |e| {
+                const p: []const kv.KeyValue = if (params != null) &params.? else &.{};
+                _ = handler.Executor(App, Request).initAndStart(alloc, mw, self.app, req, &w, query, p, hdler) catch |e| {
                     var buffer: [50]u8 = undefined;
                     self.error_handler(req, HttpError.withStringMessage(&buffer, .internal_server_error, "Internal Server Error", e));
                     return;

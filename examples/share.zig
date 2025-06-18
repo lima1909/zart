@@ -21,11 +21,10 @@ pub fn echoUser(b: arg.B(User)) User {
 
 // with URL parameter
 // curl -X GET http://localhost:8080/params/42
-pub fn params(p: arg.Params) void {
-    std.debug.print("- Param ID: {}\n", .{p});
-    if (p.value("id")) |v| {
-        std.debug.print("- Param ID: {s}\n", .{v});
-    }
+pub fn params(p: arg.Params) !void {
+    const id = try p.valueAs(i32, "id");
+    std.debug.assert(id == 42);
+    std.debug.print("- Param ID: {d}\n", .{id.?});
 }
 
 // with query parameter
