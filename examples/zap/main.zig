@@ -15,9 +15,11 @@ pub const JsonExtractor = struct {
     }
 
     // create response strings
-    pub fn response(T: type, allocator: std.mem.Allocator, r: zap.Request, w: *zart.ResponseWriter, resp: T) !void {
-        const content = try std.json.stringifyAlloc(allocator, resp, .{});
-        try r.sendJson(content);
+    pub fn response(T: type, allocator: std.mem.Allocator, r: zap.Request, w: *zart.ResponseWriter, resp: ?T) !void {
+        if (resp) |resp_body| {
+            const content = try std.json.stringifyAlloc(allocator, resp_body, .{});
+            try r.sendJson(content);
+        }
         r.setStatus(@enumFromInt(@intFromEnum(w.status)));
     }
 };
@@ -58,6 +60,7 @@ pub fn main() !void {
             zart.Route("/echo", .{ .GET, share.echoUser }),
             zart.Route("/params/:id", .{ .GET, share.params }),
             zart.Route("/query", .{ .GET, share.query }), // TODO: query not work in the moment
+            zart.Route("/forbidden", .{ .GET, share.forbidden }),
         },
         .configWithMiddleware(
             .{

@@ -42,6 +42,12 @@ pub fn index() []const u8 {
     return "index";
 }
 
+// a simple handler which return a http error: forbidden
+// curl -X GET http://localhost:8080/forbidden
+pub fn forbidden(w: *zart.ResponseWriter) void {
+    w.status = .forbidden;
+}
+
 // Middleware with printing the execution duration.
 pub fn printDurationMiddleware(h: zart.Handle) !void {
     const start = std.time.microTimestamp();

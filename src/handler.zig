@@ -44,6 +44,7 @@ pub fn handlerFromFn(App: type, Request: type, Extractor: type, func: anytype) H
             }
 
             const info = @typeInfo(@TypeOf(func));
+            comptime var withResponseWriter = false;
 
             // check the function args and create arg-values
             var args: std.meta.ArgsTuple(@TypeOf(func)) = undefined;
@@ -53,7 +54,11 @@ pub fn handlerFromFn(App: type, Request: type, Extractor: type, func: anytype) H
                         Allocator => alloc,
                         AppType => if (app) |a| a else return error.NoAppDefined,
                         Request => req,
-                        *ResponseWriter => w,
+                        *ResponseWriter => blk: {
+                            withResponseWriter = true;
+                            break :blk w;
+                        },
+                        ResponseWriter => @compileError("please use '*ResponseWriter' instead of 'ResponseWriter'"),
                         Handle => h,
                         Params => Params{ .kvs = params },
                         Query => Query{ .kvs = query },
@@ -87,9 +92,14 @@ pub fn handlerFromFn(App: type, Request: type, Extractor: type, func: anytype) H
             // check the return type
             const rty = @TypeOf(result);
             switch (@typeInfo(rty)) {
-                // error_union can't be nested, so we can return here
-                // do nothing
-                .void, .noreturn, .error_union => return,
+                // error_union can't be nested, so we can return here, do nothing
+                .error_union => return,
+                .void => {
+                    // there is no Body, but the ResponseWriter needs to have an Extractor
+                    if (withResponseWriter) {
+                        try Extractor.response(?[]const u8, alloc, req, w, null);
+                    }
+                },
                 else => try Extractor.response(rty, alloc, req, w, result),
             }
         }
@@ -390,6 +400,27 @@ test "User Body Arg" {
 
     try std.testing.expectEqual(21, r.id);
     try std.testing.expectEqualStrings("me", r.name);
+}
+
+test "handler with ResponseWriter" {
+    const Extractor = struct {
+        pub fn response(T: type, _: std.mem.Allocator, _: void, _: *ResponseWriter, _: T) !void {}
+    };
+
+    const h = handlerFromFn(
+        void,
+        void,
+        Extractor,
+        struct {
+            fn foo(w: *ResponseWriter) void {
+                w.status = .bad_request;
+            }
+        }.foo,
+    );
+
+    var w = ResponseWriter{};
+    _ = try h.handle(std.testing.allocator, null, undefined, &w, &[_]KeyValue{}, &[_]KeyValue{}, undefined);
+    try std.testing.expectEqual(.bad_request, w.status);
 }
 
 test "handler with no args and void return" {

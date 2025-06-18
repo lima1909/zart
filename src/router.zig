@@ -32,7 +32,7 @@ pub fn Route(path: []const u8, handlers: anytype) struct { path: []const u8, han
 /// Methods: an enum with supported Methods, like std.http.Method
 /// Extractor:
 ///   pub fn body(T: type, allocator: std.mem.Allocator, r: Request) !T
-///   pub fn response(T: type, allocator: std.mem.Allocator, r: Request, resp: Response(T)) !void
+///   pub fn response(T: type, allocator: std.mem.Allocator, r: Request, w: *ResponseWriter, resp_body: ?T) !void
 pub fn Router(App: type, Request: type, Method: type, Extractor: type) type {
     const Middleware = handler.Middleware(App, Request);
 
