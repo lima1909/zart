@@ -8,14 +8,29 @@
 
 </div>
 
-ZART stands for: `Zig Adaptive Radix Tree` and is an `Router` based on a radix tree.
+`ZART` stands for: `Zig Adaptive Radix Tree` and is an `Router` based on a radix tree.
+
+`ZART` is an abstraction over different implementations: 
+
+- [zap](https://github.com/zigzap/zap)
+- [zig-std](https://ziglang.org/documentation/master/std/#std.http.Server)
+- [httpz](https://github.com/karlseguin/http.zig)
+- ... 
+
+The abstraction are:
+
+- Request
+- HTTP Methods
+- Extractor (for the body, query and path parameters, response)
+
+
 
 This project is an experiment, with the aim of integrating HTTP handlers as  "normal" functions, so it is easy to write tests,
 without using "artificial" arguments and return values (like: request and response).
 
 - 🎯 zero dependencies
-- 🚀 (blazing) fast
-- 🛠️ easy to develop `Handler` and to write unit test 
+- 🚀 fast
+- 🛠️ easy to develop `Handler` (write unit test) and easy to adapt
 
 
 ## Example (code snippet) for using the Router with the std-Zig-library
@@ -24,7 +39,7 @@ See the [examples](https://github.com/lima1909/zart/tree/master/examples) folder
 
 You can run the examples with the commands:
 
-- example with [ZAP](https://github.com/zigzap/zap)
+- example with [zap](https://github.com/zigzap/zap)
 
 ```bash
 $ zig build zap
@@ -39,17 +54,25 @@ $ zig build std
 - example for defining a Router
 
 ```zig
+// An optional (thread safe) App as global context over all requests.
+const MyApp = struct {
+   database: MyDatabase,
+   sessions: MySessionManager,
+   ...
+};
+
 // create a Router with Routes 
-const router = try zart.NewRouter(std.http.Server.Request)
-   .withConfig(.{
-       .Extractor = JsonExtractor,
-       .error_handler = ErrorHandler.handleError,
-   })
+const router = try zart.Router(*MyApp, zap.Request, zap.http.Method, JsonExtractor) 
    .init(
        allocator,
+       &myapp,
    .{
        Route("/users/:id", .{ .GET, userByID }),
        Route("/users", .{ get(listUsers), post(createUser) }),
+   },
+   // configuration:
+  .{
+       .error_handler = ErrorHandler.handleError,
    },
 );
 
@@ -68,8 +91,9 @@ fn staticString() []const u8 {
 const User = struct { id: i32, name: []const u8 };
 
 // this is an handler, which return an User object with status code OK.
-fn getUser() User {
-   return .{ .id = 42, .name = "its me" };
+// curl -X GET http://localhost:8080/users/42
+fn getUser(app: *MyApp, p: Params) !User {
+   return try app.database.loadUser(try p.valueAs(i32, "id"));
 }
 
 // handler with error and combined response
@@ -79,6 +103,7 @@ fn createUserWithError(w: ResponseWriter) !User {
 }
 
 // get the User from the body and return the User to the response.
+// curl -X PATCH http://localhost:8080/users -d '{"id": 41, "name": "its me"}'
 fn renameUser(user: B(User)) User {
     return .{ .name = "new name" };
 }
