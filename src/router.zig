@@ -124,10 +124,12 @@ pub fn Router(App: type, Request: type, Method: type, Extractor: type) type {
                             params = matched.kvs;
                             break :blk h;
                         } else {
+                            std.log.debug("no route found for path: '{s}' ({})", .{ path, method });
                             err = .{ .status = .not_found, .message = @constCast("404 Not Found") };
                             break :blk null;
                         }
                     } else {
+                        std.log.debug("for method: '{}' no route found (path: {s})", .{ method, path });
                         err = .{ .status = .method_not_allowed, .message = @constCast("405 Method Not Allowed") };
                         break :blk null;
                     }
@@ -137,6 +139,7 @@ pub fn Router(App: type, Request: type, Method: type, Extractor: type) type {
                 const p: []const kv.KeyValue = if (params != null) &params.? else &.{};
                 _ = handler.Executor(App, Request).initAndStart(alloc, mw, self.app, req, &w, query, p, hdler) catch |e| {
                     var buffer: [50]u8 = undefined;
+                    std.log.debug("internal server error: '{any}' ({}: {s})", .{ e, method, path });
                     self.error_handler(req, HttpError.withStringMessage(&buffer, .internal_server_error, "Internal Server Error", e));
                     return;
                 };
@@ -149,17 +152,20 @@ pub fn Router(App: type, Request: type, Method: type, Extractor: type) type {
             }
 
             const tree = self.trees.read(method) orelse {
+                std.log.debug("for method: '{}' no route found (path: {s})", .{ method, path });
                 return self.error_handler(req, .{ .status = .method_not_allowed, .message = @constCast("405 Method Not Allowed") });
             };
             const matched = tree.resolve(path);
             if (matched.value) |hdler| {
                 var w = ResponseWriter{};
-                return hdler.handle(alloc, self.app, req, &w, query, &matched.kvs, handler.noHandle()) catch |err| {
+                return hdler.handle(alloc, self.app, req, &w, query, &matched.kvs, handler.noHandle()) catch |e| {
                     var buffer: [50]u8 = undefined;
-                    self.error_handler(req, HttpError.withStringMessage(&buffer, .bad_request, "Bad Request", err));
+                    std.log.debug("internal server error: '{any}' ({}: {s})", .{ e, method, path });
+                    self.error_handler(req, HttpError.withStringMessage(&buffer, .bad_request, "Bad Request", e));
                 };
             }
 
+            std.log.debug("no route found for path: '{s}' ({})", .{ path, method });
             self.error_handler(req, .{ .status = .not_found, .message = @constCast("404 Not Found") });
         }
     };

@@ -13,6 +13,13 @@ const Route = zart.Route;
 const get = zart.router.get;
 const post = zart.router.post;
 
+pub const std_options: std.Options = .{
+    .log_level = .debug,
+    .log_scope_levels = &.{
+        .{ .scope = .zart, .level = .debug },
+    },
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -22,7 +29,7 @@ pub fn main() !void {
         allocator,
         null,
         .{
-            Route("/user/:id", .{ .GET, user }),
+            Route("/user/:id", .{ .{ .GET, user }, .{ .PUT, user } }),
             Route("/value", .{ get(value), post(value) }),
             Route("/", .{get(staticStr)}),
             Route("/number", .{get(staticNumber)}),
