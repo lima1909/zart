@@ -8,7 +8,40 @@ const KeyValue = zart.KeyValue;
 
 const share = @import("zart_share");
 
+pub const std_options: std.Options = .{
+    .log_level = .info,
+};
+
+const ZapQuery = struct {
+    it: zap.Request.ParamSliceIterator,
+    len: isize,
+
+    pub fn value(ptr: *const anyopaque, key: []const u8) ?[]const u8 {
+        const self: *const @This() = @ptrCast(@alignCast(ptr));
+        var s: *@This() = @constCast(self); // the iterator want to write
+
+        while (s.it.next()) |param| {
+            if (std.mem.eql(u8, param.name, key)) {
+                return param.value;
+            }
+        }
+        return null;
+    }
+
+    pub fn query(self: *const ZapQuery) zart.handler.Query {
+        return .{ .ptr = self, .valueFn = value, .len = @intCast(self.len) };
+    }
+};
+
 pub const JsonExtractor = struct {
+    // convert zap query parameter to zart query parameter
+    pub fn query(r: zap.Request) zart.handler.Query {
+        r.parseQuery();
+
+        const q = ZapQuery{ .it = r.getParamSlices(), .len = r.getParamCount() };
+        return q.query();
+    }
+
     // create parameter objects
     pub fn body(T: type, allocator: std.mem.Allocator, r: zap.Request) !T {
         return try std.json.parseFromSliceLeaky(T, allocator, r.body.?, .{});
@@ -38,8 +71,7 @@ const Router = zart.Router(void, zap.Request, zap.http.Method, JsonExtractor);
 var router: Router = undefined;
 
 fn on_request(r: zap.Request) !void {
-    // TODO: get query: r.query and put to the resolve function
-    router.resolve(r.methodAsEnum(), r.path.?, r, &.{});
+    router.resolve(r.methodAsEnum(), r.path.?, r, JsonExtractor.query(r));
 }
 
 // a second handler which return a static string

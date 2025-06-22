@@ -4,9 +4,9 @@ const Allocator = std.mem.Allocator;
 
 const KeyValue = @import("kv.zig").KeyValue;
 
-const Params = arg.Params;
-const Query = arg.Query;
-const Body = arg.Body;
+pub const Query = arg.Query;
+pub const Params = arg.Params;
+pub const Body = arg.Body;
 
 /// The main interface for creating a handler function
 pub fn Handler(App: type, Request: type) type {
@@ -16,7 +16,7 @@ pub fn Handler(App: type, Request: type) type {
             app: ?App,
             req: Request,
             w: *ResponseWriter,
-            query: []const KeyValue,
+            q: Query,
             params: []const KeyValue,
             h: Handle,
         ) anyerror!void,
@@ -31,7 +31,7 @@ pub fn handlerFromFn(App: type, Request: type, Extractor: type, func: anytype) H
             app: ?App,
             req: Request,
             w: *ResponseWriter,
-            query: []const KeyValue,
+            q: Query,
             params: []const KeyValue,
             h: Handle,
         ) !void {
@@ -61,13 +61,13 @@ pub fn handlerFromFn(App: type, Request: type, Extractor: type, func: anytype) H
                         ResponseWriter => @compileError("please use '*ResponseWriter' instead of 'ResponseWriter'"),
                         Handle => h,
                         Params => Params{ .kvs = params },
-                        Query => Query{ .kvs = query },
+                        Query => q,
                         Body => try Extractor.body(std.json.Value, alloc, req),
                         else => if (@typeInfo(ty) == .@"struct")
                             if (@hasField(ty, TagFieldName))
                                 switch (@FieldType(ty, TagFieldName)) {
-                                    ParamTag => try (Params{ .kvs = params }).into(ty),
-                                    QueryTag => try (Query{ .kvs = query }).into(ty),
+                                    ParamTag => try createStructFromKV(ty, Params{ .kvs = params }),
+                                    QueryTag => try createStructFromKV(ty, q),
                                     BodyTag => try Extractor.body(ty, alloc, req),
                                     else => unreachable,
                                 }
@@ -143,7 +143,7 @@ pub fn Executor(App: type, Request: type) type {
         app: ?App = null,
         req: Request = undefined,
         w: *ResponseWriter = undefined,
-        query: []const KeyValue = undefined,
+        q: Query = undefined,
         params: []const KeyValue = undefined,
 
         /// start: execute the first Handler
@@ -154,7 +154,7 @@ pub fn Executor(App: type, Request: type) type {
             app: ?App,
             req: Request,
             w: *ResponseWriter,
-            query: []const KeyValue,
+            q: Query,
             params: []const KeyValue,
             handler: ?Handler(App, Request),
         ) !Self {
@@ -165,7 +165,7 @@ pub fn Executor(App: type, Request: type) type {
                 .app = app,
                 .req = req,
                 .w = w,
-                .query = query,
+                .q = q,
                 .params = params,
                 .handler = handler,
             };
@@ -179,7 +179,7 @@ pub fn Executor(App: type, Request: type) type {
 
             if (self.middleware.next(self.index)) |h| {
                 self.index += 1;
-                return h.handle(self.alloc, self.app, self.req, self.w, self.query, self.params, self.handle());
+                return h.handle(self.alloc, self.app, self.req, self.w, self.q, self.params, self.handle());
             }
 
             // all Middleware-Handlers are called
@@ -187,7 +187,7 @@ pub fn Executor(App: type, Request: type) type {
                 self.index += 1;
                 // if and Handler from the route is defined, than call this Handler
                 if (self.handler) |h| {
-                    return h.handle(self.alloc, self.app, self.req, self.w, self.query, self.params, self.handle());
+                    return h.handle(self.alloc, self.app, self.req, self.w, self.q, self.params, self.handle());
                 }
             }
         }
@@ -246,14 +246,66 @@ const BodyTag = struct {};
 /// arg is only a namespace for easy import all possible args
 pub const arg = struct {
     /// URL parameter.
-    pub const Params = KeyValues(ParamTag);
+    pub const Params = struct {
+        kvs: []const KeyValue,
+
+        pub inline fn value(self: *const @This(), key: []const u8) ?[]const u8 {
+            for (self.kvs) |v| {
+                if (std.mem.eql(u8, key, v.key)) {
+                    return v.value;
+                }
+            }
+
+            return null;
+        }
+
+        pub inline fn valueAs(self: *const @This(), T: type, key: []const u8) !?T {
+            return stringValueAs(T, self.value(key));
+        }
+    };
+
     /// Marker, marked the given Struct as Params
     pub fn P(comptime S: type) type {
         return structWithTag(S, ParamTag);
     }
 
     /// URL query parameter.
-    pub const Query = KeyValues(QueryTag);
+    pub const Query = struct {
+        ptr: *const anyopaque,
+        valueFn: *const fn (ptr: *const anyopaque, key: []const u8) ?[]const u8,
+        len: ?usize,
+
+        pub fn init(
+            ptr: anytype,
+            comptime valueFn: fn (ptr: @TypeOf(ptr), key: []const u8) callconv(.@"inline") ?[]const u8,
+            len: ?usize,
+        ) @This() {
+            const Ptr = @TypeOf(ptr);
+            const gen = struct {
+                fn value(p: *const anyopaque, key: []const u8) ?[]const u8 {
+                    const self: Ptr = @ptrCast(@alignCast(p));
+                    return valueFn(self, key);
+                }
+            };
+
+            return .{
+                .ptr = ptr,
+                .valueFn = gen.value,
+                .len = len,
+            };
+        }
+
+        /// Is a mapping from a given Key to the Value.
+        /// For example by a Query: ?foo=bar, return Value: bar for given Key: foo
+        pub inline fn value(self: *const @This(), key: []const u8) ?[]const u8 {
+            return self.valueFn(self.ptr, key);
+        }
+
+        pub inline fn valueAs(self: *const @This(), T: type, key: []const u8) !?T {
+            return stringValueAs(T, self.value(key));
+        }
+    };
+
     /// Marker, marked the given Struct as Query
     pub fn Q(comptime S: type) type {
         return structWithTag(S, QueryTag);
@@ -267,8 +319,49 @@ pub const arg = struct {
     }
 };
 
+/// Convert a string value in a concrete Value
+inline fn stringValueAs(T: type, value: ?[]const u8) !?T {
+    if (value) |v| {
+        return switch (@typeInfo(T)) {
+            .int => try std.fmt.parseInt(T, v, 10),
+            .float => try std.fmt.parseFloat(T, v),
+            .bool => {
+                if (std.mem.eql(u8, v, "true")) {
+                    return true;
+                } else if (std.mem.eql(u8, v, "false")) {
+                    return false;
+                }
+                return error.InvalidBool;
+            },
+            .pointer => |p| if (p.child == u8) v else @compileError("not supported type: " ++ @typeName(T) ++ " for value: " ++ value),
+            else => @compileError("not supported type: " ++ @typeName(T) ++ " for value: " ++ value),
+        };
+    }
+
+    return null;
+}
+
 /// Field name for the Tags.
 const TagFieldName = "__TAG__";
+
+/// Create an instance of an given Struct from the given key-values.
+fn createStructFromKV(comptime S: type, v: anytype) !S {
+    var instance: S = undefined;
+
+    const info = @typeInfo(S);
+    if (info == .@"struct") {
+        inline for (info.@"struct".fields) |field| {
+            if (!comptime std.mem.eql(u8, TagFieldName, field.name)) {
+                const string_value = v.value(field.name);
+                @field(instance, field.name) = if (try stringValueAs(field.type, string_value)) |val| val else undefined;
+            }
+        }
+    } else {
+        @compileError(std.fmt.comptimePrint("parms T type must be a struct, not: {s}", .{@typeName(S)}));
+    }
+
+    return instance;
+}
 
 fn structWithTag(comptime S: type, comptime Tag: type) type {
     return @Type(.{
@@ -287,106 +380,95 @@ fn structWithTag(comptime S: type, comptime Tag: type) type {
     });
 }
 
-fn KeyValues(Tag: type) type {
-    return struct {
-        const __TAG__: Tag = undefined; // mark the key-values for a specific type
-        const Self = @This();
-
-        kvs: []const KeyValue,
-
-        pub inline fn value(self: *const Self, key: []const u8) ?[]const u8 {
-            for (self.kvs) |v| {
-                if (std.mem.eql(u8, key, v.key)) {
-                    return v.value;
-                }
-            }
-
-            return null;
-        }
-
-        pub inline fn valueAs(self: *const Self, T: type, key: []const u8) !?T {
-            if (self.value(key)) |v| {
-                return switch (@typeInfo(T)) {
-                    .int => try std.fmt.parseInt(T, v, 10),
-                    .float => try std.fmt.parseFloat(T, v),
-                    .bool => {
-                        if (std.mem.eql(u8, v, "true")) {
-                            return true;
-                        } else if (std.mem.eql(u8, v, "false")) {
-                            return false;
-                        }
-                        return error.InvalidBool;
-                    },
-                    .pointer => |p| if (p.child == u8) v else null,
-                    else => @compileError("not supported type: " ++ @typeName(T) ++ " for key: " ++ key),
-                };
-            }
-
-            return null;
-        }
-
-        /// Create an instance of an given Struct from the given key-values.
-        fn into(self: *const Self, comptime S: type) !S {
-            var instance: S = undefined;
-
-            const info = @typeInfo(S);
-            if (info == .@"struct") {
-                inline for (info.@"struct".fields) |field| {
-                    if (!comptime std.mem.eql(u8, TagFieldName, field.name)) {
-                        @field(instance, field.name) = if (try self.valueAs(field.type, field.name)) |val| val else undefined;
-                    }
-                }
-            } else {
-                @compileError(std.fmt.comptimePrint("parms T type must be a struct, not: {s}", .{@typeName(S)}));
-            }
-
-            return instance;
-        }
+test "Params" {
+    const p = Params{
+        .kvs = &[_]KeyValue{
+            .{ .key = "aint", .value = "42" },
+            .{ .key = "abool", .value = "true" },
+            .{ .key = "afloat", .value = "4.2" },
+            .{ .key = "atxt", .value = "foo" },
+        },
     };
+
+    try std.testing.expectEqual(42, (try p.valueAs(i32, "aint")).?);
+    try std.testing.expectEqual(4.2, (try p.valueAs(f32, "afloat")).?);
+    try std.testing.expectEqual(true, (try p.valueAs(bool, "abool")).?);
+    try std.testing.expectEqual("foo", (try p.valueAs([]const u8, "atxt")).?);
+
+    try std.testing.expectEqualStrings("foo", p.value("atxt").?);
+    try std.testing.expectEqual(null, p.value("not_exist"));
 }
 
-test "key-values" {
-    const input = [_]KeyValue{
-        .{ .key = "aint", .value = "42" },
-        .{ .key = "abool", .value = "true" },
-        .{ .key = "afloat", .value = "4.2" },
-        .{ .key = "atxt", .value = "foo" },
+test "Params to struct instance" {
+    const p = Params{
+        .kvs = &[_]KeyValue{
+            .{ .key = "name", .value = "Mario" },
+            .{ .key = "maybe", .value = "true" },
+            .{ .key = "inumber", .value = "42" },
+            .{ .key = "fnumber", .value = "2.4" },
+        },
     };
-    const v = KeyValues(void){ .kvs = &input };
 
-    try std.testing.expectEqual(42, (try v.valueAs(i32, "aint")).?);
-    try std.testing.expectEqual(4.2, (try v.valueAs(f32, "afloat")).?);
-    try std.testing.expectEqual(true, (try v.valueAs(bool, "abool")).?);
-    try std.testing.expectEqual("foo", (try v.valueAs([]const u8, "atxt")).?);
+    const s = struct {
+        name: []const u8,
+        maybe: bool,
+        inumber: i32,
+        fnumber: f32,
+    };
 
-    try std.testing.expectEqualStrings("foo", v.value("atxt").?);
-    try std.testing.expectEqual(null, v.value("not_exist"));
+    const instance = try createStructFromKV(s, p);
+
+    try std.testing.expectEqualStrings("Mario", instance.name);
+    try std.testing.expectEqual(true, instance.maybe);
+    try std.testing.expectEqual(42, instance.inumber);
+    try std.testing.expectEqual(2.4, instance.fnumber);
 }
 
-test "fromVars string field" {
-    const p = try (KeyValues(void){ .kvs = &[_]KeyValue{
-        .{ .key = "name", .value = "Mario" },
-    } }).into(struct { name: []const u8 });
+test "Query" {
+    const p = Params{
+        .kvs = &[_]KeyValue{
+            .{ .key = "aint", .value = "42" },
+            .{ .key = "abool", .value = "true" },
+            .{ .key = "afloat", .value = "4.2" },
+            .{ .key = "atxt", .value = "foo" },
+        },
+    };
+    const q = Query.init(&p, Params.value, p.kvs.len);
 
-    try std.testing.expectEqualStrings("Mario", p.name);
+    try std.testing.expectEqual(4, q.len.?);
+
+    try std.testing.expectEqual(42, (try q.valueAs(i32, "aint")).?);
+    try std.testing.expectEqual(4.2, (try q.valueAs(f32, "afloat")).?);
+    try std.testing.expectEqual(true, (try q.valueAs(bool, "abool")).?);
+    try std.testing.expectEqual("foo", (try q.valueAs([]const u8, "atxt")).?);
+
+    try std.testing.expectEqualStrings("foo", q.value("atxt").?);
+    try std.testing.expectEqual(null, q.value("not_exist"));
 }
 
-test "fromVars bool field" {
-    const p = try (KeyValues(void){ .kvs = &[_]KeyValue{
-        .{ .key = "maybe", .value = "true" },
-    } }).into(struct { maybe: bool });
+test "Query to struct instance" {
+    const p = Params{
+        .kvs = &[_]KeyValue{
+            .{ .key = "name", .value = "Mario" },
+            .{ .key = "maybe", .value = "true" },
+            .{ .key = "inumber", .value = "42" },
+            .{ .key = "fnumber", .value = "2.4" },
+        },
+    };
+    const q = Query.init(&p, Params.value, p.kvs.len);
 
-    try std.testing.expectEqual(true, p.maybe);
-}
+    const s = struct {
+        name: []const u8,
+        maybe: bool,
+        inumber: i32,
+        fnumber: f32,
+    };
 
-test "fromVars int and foat field" {
-    const p = try (KeyValues(void){ .kvs = &[_]KeyValue{
-        .{ .key = "inumber", .value = "42" },
-        .{ .key = "fnumber", .value = "2.4" },
-    } }).into(struct { inumber: i32, fnumber: f32 });
-
-    try std.testing.expectEqual(42, p.inumber);
-    try std.testing.expectEqual(2.4, p.fnumber);
+    const instance = try createStructFromKV(s, q);
+    try std.testing.expectEqualStrings("Mario", instance.name);
+    try std.testing.expectEqual(true, instance.maybe);
+    try std.testing.expectEqual(42, instance.inumber);
+    try std.testing.expectEqual(2.4, instance.fnumber);
 }
 
 test "User Body Arg" {
@@ -419,7 +501,7 @@ test "handler with ResponseWriter" {
     );
 
     var w = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &w, &[_]KeyValue{}, &[_]KeyValue{}, undefined);
+    _ = try h.handle(std.testing.allocator, null, undefined, &w, undefined, &[_]KeyValue{}, undefined);
     try std.testing.expectEqual(.bad_request, w.status);
 }
 
@@ -433,7 +515,7 @@ test "handler with no args and void return" {
         }.foo,
     );
 
-    _ = try h.handle(std.testing.allocator, null, undefined, undefined, &[_]KeyValue{}, &[_]KeyValue{}, undefined);
+    _ = try h.handle(std.testing.allocator, null, undefined, undefined, undefined, &[_]KeyValue{}, undefined);
 }
 
 test "handler with no args and error_union with void return" {
@@ -446,7 +528,7 @@ test "handler with no args and error_union with void return" {
         }.foo,
     );
 
-    _ = try h.handle(std.testing.allocator, null, undefined, undefined, &[_]KeyValue{}, &[_]KeyValue{}, undefined);
+    _ = try h.handle(std.testing.allocator, null, undefined, undefined, undefined, &[_]KeyValue{}, undefined);
 }
 
 test "handler response with body" {
@@ -474,7 +556,7 @@ test "handler response with body" {
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{}, undefined);
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, undefined, &[_]KeyValue{}, undefined);
 }
 
 test "handle static string" {
@@ -495,7 +577,7 @@ test "handle static string" {
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{}, undefined);
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, undefined, &[_]KeyValue{}, undefined);
 }
 
 test "handle error!static string" {
@@ -516,7 +598,7 @@ test "handle error!static string" {
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{}, undefined);
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, undefined, &[_]KeyValue{}, undefined);
 }
 
 test "handle string with allocator" {
@@ -540,7 +622,7 @@ test "handle string with allocator" {
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{.{ .key = "name", .value = "me" }}, undefined);
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, undefined, &[_]KeyValue{.{ .key = "name", .value = "me" }}, undefined);
 }
 test "handler with Response" {
     const User = struct { id: i32, name: []const u8 };
@@ -565,7 +647,7 @@ test "handler with Response" {
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{}, undefined);
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, undefined, &[_]KeyValue{}, undefined);
 }
 
 test "handler with error!Response" {
@@ -591,7 +673,7 @@ test "handler with error!Response" {
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{}, undefined);
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, undefined, &[_]KeyValue{}, undefined);
 }
 
 test "handler with error!Response with List" {
@@ -624,7 +706,7 @@ test "handler with error!Response with List" {
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{}, undefined);
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, undefined, &[_]KeyValue{}, undefined);
     try std.testing.expectEqual(.created, rw.status);
 }
 
@@ -646,7 +728,7 @@ test "handler with setting the http-state" {
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, &[_]KeyValue{}, undefined);
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, undefined, &[_]KeyValue{}, undefined);
     try std.testing.expectEqual(.created, rw.status);
 }
 

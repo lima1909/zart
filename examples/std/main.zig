@@ -62,7 +62,7 @@ fn user(r: http.Server.Request, p: arg.Params, q: arg.Query, b: arg.B(ID)) ID {
     }
 
     if (q.value("foo")) |v| {
-        std.debug.print("- Query Foo: {s} ({d})\n", .{ v, q.kvs.len });
+        std.debug.print("- Query Foo: {s} ({d})\n", .{ v, q.len.? });
     }
 
     // std.debug.print("- Body ID: {d}\n", .{b.id});

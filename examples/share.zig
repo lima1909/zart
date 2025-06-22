@@ -21,17 +21,20 @@ pub fn echoUser(b: arg.B(User)) User {
 
 // with URL parameter
 // curl -X GET http://localhost:8080/params/42
-pub fn params(p: arg.Params) !void {
-    const id = try p.valueAs(i32, "id");
-    std.debug.assert(id == 42);
-    std.debug.print("- Param ID: {d}\n", .{id.?});
+pub fn params(p: arg.Params, w: *ResponseWriter) !void {
+    const param_id = try p.valueAs(i32, "id");
+    if (param_id) |id| {
+        std.debug.print("- Param ID: {d}\n", .{id});
+    } else {
+        w.status = .not_found;
+    }
 }
 
 // with query parameter
 // curl -X GET http://localhost:8080/query?name=me
 pub fn query(q: arg.Query) void {
     if (q.value("name")) |name| {
-        std.debug.print("- Query name: {s} ({d})\n", .{ name, q.kvs.len });
+        std.debug.print("- Query name: {s} ({d})\n", .{ name, q.len.? });
     }
 }
 

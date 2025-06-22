@@ -24,7 +24,12 @@ pub fn handleConnection(router: *const Router, conn: Connection) !void {
     const queryStr = if (indexQuery) |i| target[i + 1 ..] else null;
     const size: usize = if (queryStr) |s| parseQueryString(s, &vars) else 0;
 
-    router.resolve(req.head.method, path, req, vars[0..size]);
+    const arg = zart.handler.arg;
+    const params = arg.Params{ .kvs = vars[0..size] };
+    const query = arg.Query.init(&params, arg.Params.value, params.kvs.len);
+
+    router.resolve(req.head.method, path, req, query);
+
     // if no response defined, than is simple status .ok returned
     try req.respond("", Request.RespondOptions{ .status = .ok });
 }
