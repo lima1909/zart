@@ -13,6 +13,8 @@ const Route = zart.Route;
 const get = zart.router.get;
 const post = zart.router.post;
 
+const share = @import("zart_share");
+
 pub const std_options: std.Options = .{
     .log_level = .debug,
     .log_scope_levels = &.{
@@ -33,11 +35,12 @@ pub fn main() !void {
             Route("/value", .{ get(value), post(value) }),
             Route("/", .{get(staticStr)}),
             Route("/number", .{get(staticNumber)}),
+            Route("/query", .{ .GET, share.query }),
         },
         .configWithMiddleware(
             .{ .error_handler = server.ErrorHandler },
             .{
-                loggingMiddleware,
+                share.printDurationMiddleware,
             },
         ),
     );
@@ -98,16 +101,4 @@ fn staticStr() []const u8 {
 //
 fn staticNumber() i32 {
     return 42;
-}
-
-// logging middleware with printing the execution duration.
-fn loggingMiddleware(h: zart.Handle) !void {
-    const start = std.time.nanoTimestamp();
-    defer {
-        const duration = std.time.nanoTimestamp() - start;
-        std.log.info("LoggingMiddleware duration: {d}ns", .{duration});
-    }
-
-    // calling the next middleware
-    try h.next();
 }

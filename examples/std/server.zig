@@ -20,21 +20,36 @@ pub fn handleConnection(router: *const Router, conn: Connection) !void {
     const indexQuery = std.mem.indexOfPos(u8, target, 0, "?");
     const path = if (indexQuery) |i| target[0..i] else target;
 
-    var vars: [7]zart.KeyValue = undefined;
-    const queryStr = if (indexQuery) |i| target[i + 1 ..] else null;
-    const size: usize = if (queryStr) |s| parseQueryString(s, &vars) else 0;
-
-    const arg = zart.handler.arg;
-    const params = arg.Params{ .kvs = vars[0..size] };
-    const query = arg.Query.init(&params, arg.Params.value, params.kvs.len);
-
-    router.resolve(req.head.method, path, req, query);
+    router.resolve(req.head.method, path, req);
 
     // if no response defined, than is simple status .ok returned
     try req.respond("", Request.RespondOptions{ .status = .ok });
 }
 
+const Query = struct {
+    pub inline fn value(r: *const Request, key: []const u8) ?[]const u8 {
+        const target = r.head.target;
+        const indexQuery = std.mem.indexOfPos(u8, target, 0, "?");
+
+        var vars: [7]zart.KeyValue = undefined;
+        const queryStr = if (indexQuery) |i| target[i + 1 ..] else null;
+        const size: usize = if (queryStr) |s| parseQueryString(s, &vars) else 0;
+
+        for (vars[0..size]) |v| {
+            if (std.mem.eql(u8, key, v.key)) {
+                return v.value;
+            }
+        }
+
+        return null;
+    }
+};
+
 pub const JsonExtractor = struct {
+    pub fn query(_: std.mem.Allocator, r: *const Request) zart.handler.Query {
+        return zart.handler.Query.init(r, Query.value, 0);
+    }
+
     pub fn body(T: type, allocator: Allocator, req: Request) !T {
         var r = req;
         const reader = try r.reader();

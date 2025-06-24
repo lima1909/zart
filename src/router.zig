@@ -107,7 +107,7 @@ pub fn Router(App: type, Request: type, Method: type, Extractor: type) type {
             self.trees.deinit();
         }
 
-        pub fn resolve(self: *const Self, method: Method, path: []const u8, req: Request, query: handler.Query) void {
+        pub fn resolve(self: *const Self, method: Method, path: []const u8, req: Request) void {
             var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
             var arena = std.heap.ArenaAllocator.init(gpa.allocator());
             defer arena.deinit();
@@ -137,7 +137,7 @@ pub fn Router(App: type, Request: type, Method: type, Extractor: type) type {
 
                 var w = ResponseWriter{};
                 const p: []const kv.KeyValue = if (params != null) &params.? else &.{};
-                _ = handler.Executor(App, Request).initAndStart(alloc, mw, self.app, req, &w, query, p, hdler) catch |e| {
+                _ = handler.Executor(App, Request).initAndStart(alloc, mw, self.app, req, &w, p, hdler) catch |e| {
                     var buffer: [50]u8 = undefined;
                     std.log.debug("internal server error: '{any}' ({}: {s})", .{ e, method, path });
                     self.error_handler(req, HttpError.withStringMessage(&buffer, .internal_server_error, "Internal Server Error", e));
@@ -158,7 +158,7 @@ pub fn Router(App: type, Request: type, Method: type, Extractor: type) type {
             const matched = tree.resolve(path);
             if (matched.value) |hdler| {
                 var w = ResponseWriter{};
-                return hdler.handle(alloc, self.app, req, &w, query, &matched.kvs, handler.noHandle()) catch |e| {
+                return hdler.handle(alloc, self.app, req, &w, &matched.kvs, handler.noHandle()) catch |e| {
                     var buffer: [50]u8 = undefined;
                     std.log.debug("internal server error: '{any}' ({}: {s})", .{ e, method, path });
                     self.error_handler(req, HttpError.withStringMessage(&buffer, .bad_request, "Bad Request", e));
@@ -309,10 +309,10 @@ test "router for handler object" {
 
     var i: i32 = 3;
 
-    router.resolve(.GET, "/foo", &i, undefined);
+    router.resolve(.GET, "/foo", &i);
     try std.testing.expectEqual(4, i);
 
-    router.resolve(.GET, "/bar", &i, undefined);
+    router.resolve(.GET, "/bar", &i);
     try std.testing.expectEqual(5, i);
 }
 
@@ -338,7 +338,7 @@ test "router for i32" {
     defer router.deinit();
 
     var i: i32 = 3;
-    router.resolve(.HEAD, "/foo", &i, undefined);
+    router.resolve(.HEAD, "/foo", &i);
 
     try std.testing.expectEqual(4, i);
     try std.testing.expectEqual(5, app.value);
@@ -386,7 +386,7 @@ test "router std.http.Server.Request" {
         },
     };
 
-    router.resolve(.PATCH, "/user/42", &req, undefined);
+    router.resolve(.PATCH, "/user/42", &req);
 
     // the user function set keep_alive = true
     try std.testing.expectEqual(true, req.head.keep_alive);
@@ -411,7 +411,7 @@ test "router for struct params" {
     defer router.deinit();
 
     var i: i32 = 3;
-    router.resolve(.DELETE, "/foo/true", &i, undefined);
+    router.resolve(.DELETE, "/foo/true", &i);
 
     try std.testing.expectEqual(4, i);
 }
@@ -434,7 +434,7 @@ test "router for params" {
     defer router.deinit();
 
     var i: i32 = 3;
-    _ = router.resolve(.POST, "/foo/42", &i, undefined);
+    _ = router.resolve(.POST, "/foo/42", &i);
     try std.testing.expectEqual(4, i);
 }
 
@@ -455,7 +455,7 @@ test "first Params, than request" {
     defer router.deinit();
 
     var i: i32 = 3;
-    router.resolve(.GET, "/foo/42", &i, undefined);
+    router.resolve(.GET, "/foo/42", &i);
     try std.testing.expectEqual(45, i);
 }
 
@@ -466,8 +466,16 @@ test "with query" {
         }
     }.foo;
 
-    const router = try testRouter(
-        *i32,
+    const Extractor = struct {
+        pub fn query(_: std.mem.Allocator, _: *const *i32) handler.Query {
+            const params = Params{ .kvs = &.{.{ .key = "id", .value = "42" }} };
+            return handler.Query.init(&params, Params.value, params.kvs.len);
+        }
+    };
+
+    const router = try Router(void, *i32, std.http.Method, Extractor).init(
+        std.testing.allocator,
+        null,
         .{
             Route("/foo", .{ .GET, foo }),
         },
@@ -476,8 +484,7 @@ test "with query" {
     defer router.deinit();
 
     var i: i32 = 3;
-    const params = Params{ .kvs = &.{.{ .key = "id", .value = "42" }} };
-    _ = router.resolve(.GET, "/foo", &i, handler.arg.Query.init(&params, Params.value, params.kvs.len));
+    _ = router.resolve(.GET, "/foo", &i);
     try std.testing.expectEqual(45, i);
 }
 
@@ -489,8 +496,16 @@ test "with Q" {
         }
     }.foo;
 
-    const router = try testRouter(
-        *i32,
+    const Extractor = struct {
+        pub fn query(_: std.mem.Allocator, _: *const *i32) handler.Query {
+            const params = Params{ .kvs = &.{.{ .key = "id", .value = "42" }} };
+            return handler.Query.init(&params, Params.value, params.kvs.len);
+        }
+    };
+
+    const router = try Router(void, *i32, std.http.Method, Extractor).init(
+        std.testing.allocator,
+        null,
         .{
             Route("/foo", .{ .GET, foo }),
         },
@@ -499,8 +514,7 @@ test "with Q" {
     defer router.deinit();
 
     var i: i32 = 3;
-    const params = Params{ .kvs = &.{.{ .key = "id", .value = "42" }} };
-    router.resolve(.GET, "/foo", &i, handler.arg.Query.init(&params, Params.value, params.kvs.len));
+    router.resolve(.GET, "/foo", &i);
     try std.testing.expectEqual(45, i);
 }
 
@@ -528,7 +542,7 @@ test "with B" {
     defer router.deinit();
 
     var i: i32 = 3;
-    router.resolve(.GET, "/foo", &i, undefined);
+    router.resolve(.GET, "/foo", &i);
     try std.testing.expectEqual(45, i);
 }
 
@@ -557,7 +571,7 @@ test "with Body" {
     defer router.deinit();
 
     var i: i32 = 3;
-    router.resolve(.GET, "/foo", &i, undefined);
+    router.resolve(.GET, "/foo", &i);
     try std.testing.expectEqual(45, i);
 }
 
@@ -591,7 +605,7 @@ test "request with two args" {
     defer router.deinit();
 
     var i: i32 = 3;
-    router.resolve(.GET, "/foo", .{ &i, true }, undefined);
+    router.resolve(.GET, "/foo", .{ &i, true });
     try std.testing.expectEqual(48, i);
 }
 
@@ -626,14 +640,14 @@ test "not_found" {
     defer router.deinit();
 
     var notFoundReq = NotFoundRequest{};
-    router.resolve(.GET, "/not_found", &notFoundReq, undefined);
+    router.resolve(.GET, "/not_found", &notFoundReq);
 
     try std.testing.expectEqual(.not_found, notFoundReq.err.?.status);
     try std.testing.expectEqualStrings("404 Not Found", notFoundReq.err.?.message);
     try std.testing.expectEqual(1, notFoundReq.req);
 
     // for POST has no tree
-    router.resolve(.POST, "/foo", &notFoundReq, undefined);
+    router.resolve(.POST, "/foo", &notFoundReq);
 
     try std.testing.expectEqual(.method_not_allowed, notFoundReq.err.?.status);
     try std.testing.expectEqualStrings("405 Method Not Allowed", notFoundReq.err.?.message);
@@ -671,7 +685,7 @@ test "bad request" {
     defer router.deinit();
 
     var badRequest = BadRequest{};
-    router.resolve(.GET, "/foo", &badRequest, undefined);
+    router.resolve(.GET, "/foo", &badRequest);
 
     try std.testing.expectEqual(true, badRequest.was_called);
     try std.testing.expectEqual(.bad_request, badRequest.status);
@@ -694,9 +708,9 @@ test "two routes for one path" {
     defer router.deinit();
 
     var i: i32 = 3;
-    router.resolve(.GET, "/foo", &i, undefined);
+    router.resolve(.GET, "/foo", &i);
     try std.testing.expectEqual(4, i);
-    router.resolve(.POST, "/foo", &i, undefined);
+    router.resolve(.POST, "/foo", &i);
     try std.testing.expectEqual(5, i);
 }
 
@@ -737,7 +751,7 @@ test "Xwith Middleware" {
     defer router.deinit();
 
     var i: i32 = 3;
-    router.resolve(.GET, "/foo", &i, undefined);
+    router.resolve(.GET, "/foo", &i);
 
     try std.testing.expectEqual(18, i);
 }

@@ -16,7 +16,6 @@ pub fn Handler(App: type, Request: type) type {
             app: ?App,
             req: Request,
             w: *ResponseWriter,
-            q: Query,
             params: []const KeyValue,
             h: Handle,
         ) anyerror!void,
@@ -31,7 +30,6 @@ pub fn handlerFromFn(App: type, Request: type, Extractor: type, func: anytype) H
             app: ?App,
             req: Request,
             w: *ResponseWriter,
-            q: Query,
             params: []const KeyValue,
             h: Handle,
         ) !void {
@@ -61,13 +59,13 @@ pub fn handlerFromFn(App: type, Request: type, Extractor: type, func: anytype) H
                         ResponseWriter => @compileError("please use '*ResponseWriter' instead of 'ResponseWriter'"),
                         Handle => h,
                         Params => Params{ .kvs = params },
-                        Query => q,
+                        Query => Extractor.query(alloc, &req),
                         Body => try Extractor.body(std.json.Value, alloc, req),
                         else => if (@typeInfo(ty) == .@"struct")
                             if (@hasField(ty, TagFieldName))
                                 switch (@FieldType(ty, TagFieldName)) {
                                     ParamTag => try createStructFromKV(ty, Params{ .kvs = params }),
-                                    QueryTag => try createStructFromKV(ty, q),
+                                    QueryTag => try createStructFromKV(ty, Extractor.query(alloc, &req)),
                                     BodyTag => try Extractor.body(ty, alloc, req),
                                     else => unreachable,
                                 }
@@ -143,7 +141,6 @@ pub fn Executor(App: type, Request: type) type {
         app: ?App = null,
         req: Request = undefined,
         w: *ResponseWriter = undefined,
-        q: Query = undefined,
         params: []const KeyValue = undefined,
 
         /// start: execute the first Handler
@@ -154,7 +151,6 @@ pub fn Executor(App: type, Request: type) type {
             app: ?App,
             req: Request,
             w: *ResponseWriter,
-            q: Query,
             params: []const KeyValue,
             handler: ?Handler(App, Request),
         ) !Self {
@@ -165,7 +161,6 @@ pub fn Executor(App: type, Request: type) type {
                 .app = app,
                 .req = req,
                 .w = w,
-                .q = q,
                 .params = params,
                 .handler = handler,
             };
@@ -179,7 +174,7 @@ pub fn Executor(App: type, Request: type) type {
 
             if (self.middleware.next(self.index)) |h| {
                 self.index += 1;
-                return h.handle(self.alloc, self.app, self.req, self.w, self.q, self.params, self.handle());
+                return h.handle(self.alloc, self.app, self.req, self.w, self.params, self.handle());
             }
 
             // all Middleware-Handlers are called
@@ -187,7 +182,7 @@ pub fn Executor(App: type, Request: type) type {
                 self.index += 1;
                 // if and Handler from the route is defined, than call this Handler
                 if (self.handler) |h| {
-                    return h.handle(self.alloc, self.app, self.req, self.w, self.q, self.params, self.handle());
+                    return h.handle(self.alloc, self.app, self.req, self.w, self.params, self.handle());
                 }
             }
         }
@@ -486,6 +481,10 @@ test "User Body Arg" {
 
 test "handler with ResponseWriter" {
     const Extractor = struct {
+        pub fn query(_: std.mem.Allocator, _: *const void) Query {
+            return undefined;
+        }
+
         pub fn response(T: type, _: std.mem.Allocator, _: void, _: *ResponseWriter, _: T) !void {}
     };
 
@@ -501,7 +500,7 @@ test "handler with ResponseWriter" {
     );
 
     var w = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &w, undefined, &[_]KeyValue{}, undefined);
+    _ = try h.handle(std.testing.allocator, null, undefined, &w, &[_]KeyValue{}, undefined);
     try std.testing.expectEqual(.bad_request, w.status);
 }
 
@@ -515,7 +514,7 @@ test "handler with no args and void return" {
         }.foo,
     );
 
-    _ = try h.handle(std.testing.allocator, null, undefined, undefined, undefined, &[_]KeyValue{}, undefined);
+    _ = try h.handle(std.testing.allocator, null, undefined, undefined, &[_]KeyValue{}, undefined);
 }
 
 test "handler with no args and error_union with void return" {
@@ -528,7 +527,7 @@ test "handler with no args and error_union with void return" {
         }.foo,
     );
 
-    _ = try h.handle(std.testing.allocator, null, undefined, undefined, undefined, &[_]KeyValue{}, undefined);
+    _ = try h.handle(std.testing.allocator, null, undefined, undefined, &[_]KeyValue{}, undefined);
 }
 
 test "handler response with body" {
@@ -556,7 +555,7 @@ test "handler response with body" {
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, undefined, &[_]KeyValue{}, undefined);
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, undefined);
 }
 
 test "handle static string" {
@@ -577,7 +576,7 @@ test "handle static string" {
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, undefined, &[_]KeyValue{}, undefined);
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, undefined);
 }
 
 test "handle error!static string" {
@@ -598,7 +597,7 @@ test "handle error!static string" {
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, undefined, &[_]KeyValue{}, undefined);
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, undefined);
 }
 
 test "handle string with allocator" {
@@ -622,7 +621,7 @@ test "handle string with allocator" {
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, undefined, &[_]KeyValue{.{ .key = "name", .value = "me" }}, undefined);
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{.{ .key = "name", .value = "me" }}, undefined);
 }
 test "handler with Response" {
     const User = struct { id: i32, name: []const u8 };
@@ -647,7 +646,7 @@ test "handler with Response" {
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, undefined, &[_]KeyValue{}, undefined);
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, undefined);
 }
 
 test "handler with error!Response" {
@@ -673,7 +672,7 @@ test "handler with error!Response" {
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, undefined, &[_]KeyValue{}, undefined);
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, undefined);
 }
 
 test "handler with error!Response with List" {
@@ -706,7 +705,7 @@ test "handler with error!Response with List" {
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, undefined, &[_]KeyValue{}, undefined);
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, undefined);
     try std.testing.expectEqual(.created, rw.status);
 }
 
@@ -728,7 +727,7 @@ test "handler with setting the http-state" {
     );
 
     var rw = ResponseWriter{};
-    _ = try h.handle(std.testing.allocator, null, undefined, &rw, undefined, &[_]KeyValue{}, undefined);
+    _ = try h.handle(std.testing.allocator, null, undefined, &rw, &[_]KeyValue{}, undefined);
     try std.testing.expectEqual(.created, rw.status);
 }
 
@@ -760,7 +759,7 @@ test "middleware handlers" {
     var req: i32 = 0;
 
     const E = Executor(void, *i32);
-    var exec = try E.initAndStart(std.testing.allocator, mw, null, &req, &w, undefined, undefined, null);
+    var exec = try E.initAndStart(std.testing.allocator, mw, null, &req, &w, undefined, null);
 
     try std.testing.expectEqual(1, req);
 
@@ -803,7 +802,7 @@ test "middleware handlers with cancel" {
     var w = ResponseWriter{};
 
     const E = Executor(void, *i32);
-    var exec = try E.initAndStart(std.testing.allocator, mw, null, &req, &w, undefined, undefined, null);
+    var exec = try E.initAndStart(std.testing.allocator, mw, null, &req, &w, undefined, null);
     try std.testing.expectEqual(1, req);
 
     try E.next(&exec);
@@ -843,7 +842,6 @@ test "middleware handlers with route Handler" {
         null,
         &req,
         &w,
-        undefined,
         undefined,
         handlerFromFn(void, *i32, void, def.handler),
     );
