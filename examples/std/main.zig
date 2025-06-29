@@ -1,18 +1,12 @@
 //!
 //! Run:  zig build std
 //!
-
 const std = @import("std");
 const http = std.http;
 
-const server = @import("server.zig");
-
 const zart = @import("zart");
-const arg = zart.handler.arg;
 const Route = zart.Route;
-const get = zart.router.get;
-const post = zart.router.post;
-
+const server = @import("server.zig");
 const share = @import("zart_share");
 
 pub const std_options: std.Options = .{
@@ -31,11 +25,12 @@ pub fn main() !void {
         allocator,
         null,
         .{
-            Route("/user/:id", .{ .{ .GET, user }, .{ .PUT, user } }),
-            Route("/value", .{ get(value), post(value) }),
-            Route("/", .{get(staticStr)}),
-            Route("/number", .{get(staticNumber)}),
+            Route("/", .{ .{ .GET, share.index }, .{ .POST, share.index } }),
+            Route("/str", .{ .GET, staticStr }),
+            Route("/echo", .{ .GET, share.echoUser }),
+            Route("/params/:id", .{ .GET, share.params }),
             Route("/query", .{ .GET, share.query }),
+            Route("/forbidden", .{ .GET, share.forbidden }),
         },
         .configWithMiddleware(
             .{ .error_handler = server.ErrorHandler },
@@ -60,45 +55,8 @@ pub fn main() !void {
     }
 }
 
-const ID = struct { id: i32 };
-
-//
-// curl http://localhost:8080/user/42?foo=bar -d '{"id": 41}'
-//
-fn user(r: http.Server.Request, p: arg.Params, q: arg.Query, b: arg.B(ID)) ID {
-    std.debug.print("Method: {}\n", .{r.head.method});
-    if (p.value("id")) |v| {
-        std.debug.print("- Param ID: {s}\n", .{v});
-    }
-
-    if (q.value("foo")) |v| {
-        std.debug.print("- Query Foo: {s} ({d})\n", .{ v, q.len.? });
-    }
-
-    // std.debug.print("- Body ID: {d}\n", .{b.id});
-    return .{ .id = b.id };
-}
-
-//
-// curl http://localhost:8080/value -d '{"id": 41}'
-// curl -X POST http://localhost:8080/value -d '{"id": 41}'
-//
-fn value(b: arg.Body) !void {
-    const obj = b.object;
-    const id = obj.get("id") orelse .null;
-    std.debug.print("- Body ID: {}\n", .{id.integer});
-}
-
-//
-// curl -X GET http://localhost:8080/
-//
-fn staticStr() []const u8 {
-    return "hello world";
-}
-
-//
-// curl -X GET http://localhost:8080/number
-//
-fn staticNumber() i32 {
-    return 42;
+// a second handler which return a static string
+fn staticStr(r: http.Server.Request) !void {
+    var req = r;
+    try req.respond("hello world", .{ .status = .ok });
 }

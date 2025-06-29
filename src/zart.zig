@@ -6,6 +6,7 @@ pub const Route = router.Route;
 pub const handler = @import("handler.zig");
 pub const Handle = handler.Handle;
 pub const ResponseWriter = handler.ResponseWriter;
+pub const Query = handler.Query;
 pub const Middleware = handler.Middleware;
 
 pub const KeyValue = @import("kv.zig").KeyValue;

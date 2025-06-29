@@ -4,8 +4,6 @@
 const std = @import("std");
 const zap = @import("zap");
 const zart = @import("zart");
-const KeyValue = zart.KeyValue;
-
 const share = @import("zart_share");
 
 pub const std_options: std.Options = .{
@@ -27,7 +25,7 @@ const Query = struct {
 
 pub const JsonExtractor = struct {
     // convert zap query parameter to zart query parameter
-    pub fn query(_: std.mem.Allocator, r: *const zap.Request) zart.handler.Query {
+    pub fn query(_: std.mem.Allocator, r: *const zap.Request) zart.Query {
         r.parseQuery();
         return zart.handler.Query.init(r, Query.value, @intCast(r.getParamCount()));
     }
@@ -62,11 +60,6 @@ var router: Router = undefined;
 
 fn on_request(r: zap.Request) !void {
     router.resolve(r.methodAsEnum(), r.path.?, r);
-}
-
-// a second handler which return a static string
-fn staticStr(r: zap.Request) !void {
-    try r.sendBody("hello world");
 }
 
 pub fn main() !void {
@@ -105,4 +98,9 @@ pub fn main() !void {
     std.debug.print("Listening on 127.0.0.1:8080\n", .{});
 
     zap.start(.{ .threads = 4, .workers = 4 });
+}
+
+// a second handler which return a static string
+fn staticStr(r: zap.Request) !void {
+    try r.sendBody("hello world");
 }

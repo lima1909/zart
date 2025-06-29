@@ -58,9 +58,16 @@ pub const JsonExtractor = struct {
     }
 
     pub fn response(T: type, allocator: Allocator, req: Request, w: *zart.ResponseWriter, resp: T) !void {
-        const content = try std.json.stringifyAlloc(allocator, resp, .{});
         var r = req;
-        try r.respond(content, .{ .status = w.status });
+
+        switch (@typeInfo(T)) {
+            .pointer => |p| if (p.child == u8)
+                try r.respond(resp, .{ .status = w.status }),
+            else => {
+                const content = try std.json.stringifyAlloc(allocator, resp, .{});
+                try r.respond(content, .{ .status = w.status });
+            },
+        }
     }
 };
 
